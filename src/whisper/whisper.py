@@ -201,7 +201,7 @@ def main():
     duration_sec, features = extract_audio_features(AUDIO_FILE)
     wpm = calc_wpm(transcript_text, duration_sec)
 
-    print("\n🧠 Gemini로 IR 발표 분석 중...")
+    print("\n Gemini로 IR 발표 분석 중...")
     json_result = analyze_with_gemini(
         transcript_text=transcript_text,
         scenario=SCENARIO,
