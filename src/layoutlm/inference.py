@@ -1,17 +1,7 @@
+# src/layoutlm/inference.py
 import torch
 from typing import List, Dict, Any
-from transformers import LayoutLMv3ForTokenClassification
-from src.layoutlm.config import LAYOUTLM_MODEL_PATH
-
-def load_model(num_labels: int):
-    """
-    라벨 개수에 맞춰 모델 초기화
-    """
-    model = LayoutLMv3ForTokenClassification.from_pretrained(
-        LAYOUTLM_MODEL_PATH,
-        num_labels=num_labels
-    )
-    return model
+from src.layoutlm.config import load_model
 
 def run_inference(inputs: Dict[str, torch.Tensor], label_list: List[str], tokenizer=None) -> List[List[Dict[str, Any]]]:
     """
@@ -23,14 +13,14 @@ def run_inference(inputs: Dict[str, torch.Tensor], label_list: List[str], tokeni
         tokenizer: 토큰 ID를 텍스트로 변환하는 토크나이저 (선택사항이지만 권장)
     
     Returns:
-        배치의 각 문서별 결과 리스트.
+        배치의 각 문서별 결과 리스트. 각 결과는:
+        - token_id: 토큰 ID
+        - token_text: 디코딩된 토큰 텍스트 (tokenizer 제공시)
+        - label: 예측된 라벨
+        - position: 시퀀스 내 위치
     """
-    # 문서 타입에 따라 라벨 개수가 다르므로 여기서 동적으로 로드합니다.
-    model = load_model(len(label_list))
+    model = load_model()
     model.eval()
-
-    # 입력을 장치(CPU/GPU)로 이동 (현재는 CPU 기준)
-    # inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(**inputs)
@@ -38,11 +28,7 @@ def run_inference(inputs: Dict[str, torch.Tensor], label_list: List[str], tokeni
         predictions = logits.argmax(dim=-1)  # (batch_size, seq_len)
 
     # attention mask로 유효한(패딩 아닌) 토큰 식별
-    if "attention_mask" in inputs:
-        attention_mask = inputs["attention_mask"]
-    else:
-        attention_mask = torch.ones_like(inputs["input_ids"])
-        
+    attention_mask = inputs.get("attention_mask", torch.ones_like(inputs["input_ids"]))
     input_ids = inputs["input_ids"]
     
     batch_size, seq_len = input_ids.shape
@@ -59,6 +45,10 @@ def run_inference(inputs: Dict[str, torch.Tensor], label_list: List[str], tokeni
             
             token_id = input_ids[batch_idx, seq_idx].item()
             pred_idx = predictions[batch_idx, seq_idx].item()
+            
+            # 특수 토큰 건너뛰기 (선택사항 - 용도에 따라 다름)
+            # if token_id in [tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.pad_token_id]:
+            #     continue
             
             # 예측 인덱스가 유효한지 확인
             if pred_idx >= len(label_list):
@@ -103,14 +93,14 @@ def aggregate_entities(results: List[Dict[str, Any]], tokenizer=None) -> List[Di
         label = result["label"]
         
         if label.startswith("B-"):
-            # 이전 엔티티 저장
+            # 새 엔티티 시작
             if current_entity is not None:
                 entities.append(current_entity)
             
             entity_type = label[2:]  # "B-" 접두사 제거
             current_entity = {
                 "entity_type": entity_type,
-                "tokens": [result.get("token_text", "")],
+                "tokens": [result["token_text"]] if "token_text" in result else [],
                 "token_ids": [result["token_id"]],
                 "start_position": result["position"]
             }
@@ -122,20 +112,17 @@ def aggregate_entities(results: List[Dict[str, Any]], tokenizer=None) -> List[Di
                 if "token_text" in result:
                     current_entity["tokens"].append(result["token_text"])
                 current_entity["token_ids"].append(result["token_id"])
-        
-        # "O" 태그를 만나면 현재 엔티티 종료로 간주하는 로직을 추가할 수도 있음
-        # 현재는 B- 태그가 새로 나오거나 루프가 끝날 때 저장함
     
-    # 마지막 엔티티 저장
+    # 마지막 엔티티 잊지 않기
     if current_entity is not None:
         entities.append(current_entity)
     
     # 각 엔티티의 전체 텍스트 재구성
     for entity in entities:
         if tokenizer and entity["tokens"]:
-            # 서브워드 토큰을 올바르게 처리하여 재구성 (## 제거 등)
+            # 서브워드 토큰을 올바르게 처리하여 재구성
             entity["text"] = tokenizer.convert_tokens_to_string(entity["tokens"])
         else:
-            entity["text"] = " ".join(entity["tokens"]).replace(" ##", "")
+            entity["text"] = " ".join(entity["tokens"])
     
     return entities
