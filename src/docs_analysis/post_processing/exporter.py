@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Dict, List, Optional
-from src.llm.gemini_client import GeminiAnalyst
+from src.docs_analysis.llm.gemini_client import GeminiAnalyst
 
 # 기본 필수 섹션 (LLM이 실패했을 때 사용)
 DEFAULT_REQUIRED_SECTIONS = {
