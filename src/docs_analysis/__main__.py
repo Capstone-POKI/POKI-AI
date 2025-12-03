@@ -14,24 +14,24 @@ load_dotenv()
 from src.utils.io_utils import save_json, read_json
 from src.utils.pdf_split import split_pdf 
 
-from src.document_ai.processor import (
+from src.docs_analysis.document_ai.processor import (
     process_document,
     process_pdf_ocr_in_chunks,
     merge_chunk_results
 )
-from src.layoutlm.preprocess import (
+from src.docs_analysis.layoutlm.preprocess import (
     prepare_layoutlm_input,
     load_docai_json,
     get_labels,
     get_label_info,
     print_label_statistics
 )
-from src.layoutlm.inference import run_inference, aggregate_entities
-from src.layoutlm.config import LAYOUTLM_MODEL_PATH
+from src.docs_analysis.layoutlm.inference import run_inference, aggregate_entities
+from src.docs_analysis.layoutlm.config import LAYOUTLM_MODEL_PATH
 
 # 🔥 [NEW] Gemini 및 후처리 모듈 추가
-from src.llm.gemini_client import GeminiAnalyst
-from src.post_processing.exporter import export_final_json
+from src.docs_analysis.llm.gemini_client import GeminiAnalyst
+from src.docs_analysis.post_processing.exporter import export_final_json
 
 
 INPUT_DIR = "data/input"
