@@ -1,4 +1,3 @@
-# src/document_ai/processor.py
 """
 Document AI API 호출 + 강화 기능
 """
@@ -12,7 +11,7 @@ from google.cloud import documentai_v1beta3 as documentai
 # 기존 유틸 임포트 (그대로 가져와서 사용)
 from src.utils.io_utils import save_json, read_json, read_bytes
 from src.utils.pdf_split import split_pdf
-from src.document_ai.config import PROJECT_ID, LOCATION, PROCESSORS
+from src.docs_analysis.document_ai.config import PROJECT_ID, LOCATION, PROCESSORS
 
 
 # 섹션 감지 패턴
