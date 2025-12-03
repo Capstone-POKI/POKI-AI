@@ -1,5 +1,3 @@
-# src/layoutlm/config.py
-
 import os
 
 LAYOUTLM_MODEL_PATH = "microsoft/layoutlmv3-base"

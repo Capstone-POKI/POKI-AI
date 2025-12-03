@@ -1,7 +1,7 @@
 # src/layoutlm/inference.py
 import torch
 from typing import List, Dict, Any
-from src.layoutlm.config import load_model
+from src.docs_analysis.layoutlm.config import load_model
 
 def run_inference(inputs: Dict[str, torch.Tensor], label_list: List[str], tokenizer=None) -> List[List[Dict[str, Any]]]:
     """

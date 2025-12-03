@@ -4,7 +4,7 @@ from google.oauth2 import service_account
 import vertexai
 from vertexai.generative_models import GenerativeModel
 
-from src.document_ai.config import PROJECT_ID
+from src.docs_analysis.document_ai.config import PROJECT_ID
 
 class GeminiAnalyst:
     def __init__(self):
