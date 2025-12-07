@@ -1,32 +1,35 @@
 import json
 import re
 from typing import Dict, List, Optional
-from src.docs_analysis.llm.gemini_client import GeminiAnalyst
 
-# 기본 필수 섹션 (LLM이 실패했을 때 사용)
+from src.docs_analysis.llm.gemini_client import GeminiAnalyst
+from src.docs_analysis.llm.prompts.ir_analysis_prompt import build_ir_analysis_prompt
+
+
 DEFAULT_REQUIRED_SECTIONS = {
-    "problem", "solution", "market", "business_model", 
+    "problem", "solution", "market", "business_model",
     "competition", "growth", "team", "finance"
 }
 
+
 def estimate_speech_duration(text: str) -> int:
-    """텍스트 길이를 기반으로 발표 예상 시간(초) 계산"""
     clean_text = re.sub(r'\s+', '', text)
     length = len(clean_text)
-    if length == 0: return 0
+    if length == 0:
+        return 0
     return int(length / 3.5) + 2
 
+
 def analyze_visual_balance(text_len: int, image_count: int) -> Dict:
-    """텍스트와 이미지 비율을 분석하여 점수와 상태 반환"""
     score = 50
     status = "balanced"
-    
+
     if image_count == 0:
         score -= 30
         status = "text_heavy"
     elif image_count > 3:
         score += 10
-    
+
     if text_len > 600:
         score -= 20
         status = "text_heavy"
@@ -37,11 +40,11 @@ def analyze_visual_balance(text_len: int, image_count: int) -> Dict:
         status = "image_centric"
     elif text_len < 100 and image_count > 2:
         status = "image_centric"
-    
+
     return {"score": max(0, min(100, score)), "status": status}
 
+
 def generate_voice_guide(text_len: int, duration: int) -> Dict:
-    """음성 팀을 위한 가이드 생성"""
     advice = "적절한 속도로 발표하세요."
     if duration > 100:
         advice = f"내용이 많습니다({duration}초 예상). 핵심 키워드 위주로 요약 발언이 필요합니다."
@@ -49,23 +52,22 @@ def generate_voice_guide(text_len: int, duration: int) -> Dict:
         advice = f"내용이 많은 편입니다({duration}초 예상). 핵심 포인트를 강조하며 진행하세요."
     elif duration < 10:
         advice = "내용이 짧습니다. 부연 설명을 덧붙여 여유 있게 진행하세요."
-        
+
     return {
         "estimated_duration_sec": duration,
         "pacing_advice": advice
     }
 
+
 def extract_slide_contents(docai_result: Dict, pages: List[Dict]) -> List[Dict]:
-    """각 슬라이드의 텍스트와 이미지 정보 추출"""
     slides_data = []
     detected_sections = docai_result.get("detected_sections", [])
     section_map = {s['page']: s['section'] for s in detected_sections}
-    
+
     for idx, page in enumerate(pages):
         page_num = idx + 1
         section_type = section_map.get(page_num, "unknown")
-        
-        # 텍스트 추출
+
         full_text = ""
         for block in page.get("blocks", []):
             layout = block.get("layout", {})
@@ -73,10 +75,10 @@ def extract_slide_contents(docai_result: Dict, pages: List[Dict]) -> List[Dict]:
                 start = int(segment.get("startIndex", 0))
                 end = int(segment.get("endIndex", 0))
                 full_text += docai_result.get("text", "")[start:end]
-        
+
         text_len = len(full_text)
         image_count = len(page.get("image", []))
-        
+
         est_duration = estimate_speech_duration(full_text)
         visual_analysis = analyze_visual_balance(text_len, image_count)
         voice_guide = generate_voice_guide(text_len, est_duration)
@@ -85,7 +87,7 @@ def extract_slide_contents(docai_result: Dict, pages: List[Dict]) -> List[Dict]:
             "page_number": page_num,
             "section_type": section_type,
             "contents": {
-                "full_text": full_text,  # LLM에게 전달용
+                "full_text": full_text,
                 "summary": full_text[:100] + "..." if len(full_text) > 100 else full_text,
                 "char_count": text_len,
                 "image_count": image_count
@@ -95,9 +97,9 @@ def extract_slide_contents(docai_result: Dict, pages: List[Dict]) -> List[Dict]:
                 "readability": "Low" if text_len > 800 else ("Medium" if text_len > 400 else "High")
             },
             "voice_guide": voice_guide,
-            "design_feedback": []  # LLM이 채울 예정
+            "design_feedback": []
         })
-    
+
     return slides_data
 
 
@@ -107,16 +109,13 @@ def analyze_with_gemini(
     pitch_strategy: Optional[Dict],
     doc_type: str
 ) -> Dict:
-    """
-    🔥 [핵심] Gemini를 활용한 LLM 기반 진단 및 개선안 생성
-    """
-    print("\n🧠 Gemini AI가 문서를 심층 분석하는 중...")
-    
+
+    print("\n 문서 분석 진행 중...")
+
     if not gemini.model:
-        print("⚠️ Gemini 모델이 없어 기본 분석을 사용합니다.")
+        print("⚠ Gemini 모델 없음 → 기본 분석으로 전환")
         return _get_fallback_analysis(slides_data, pitch_strategy)
-    
-    # --- 1. 슬라이드 요약 데이터 준비 ---
+
     slides_summary = []
     for slide in slides_data:
         slides_summary.append({
@@ -127,9 +126,7 @@ def analyze_with_gemini(
             "image_count": slide["contents"]["image_count"],
             "duration_sec": slide["voice_guide"]["estimated_duration_sec"]
         })
-    
-    # --- 2. 프롬프트 구성 (범용성 + 공고 전략 반영) ---
-    strategy_context = ""
+
     if pitch_strategy:
         strategy_context = f"""
 [심사 전략 정보 (공고문 기반)]
@@ -140,114 +137,41 @@ def analyze_with_gemini(
 - 킬러 질문: {pitch_strategy.get('killer_question', 'N/A')}
 """
     else:
-        strategy_context = "[심사 전략 정보 없음 - 범용 분석 모드]"
-    
-    prompt = f"""
-당신은 전문 IR/피칭 컨설턴트입니다. 주어진 문서를 분석하고 개선안을 제시하세요.
+        strategy_context = "[심사 전략 정보 없음 – 범용 분석 모드]"
 
-{strategy_context}
+    total_duration = sum(s['voice_guide']['estimated_duration_sec'] for s in slides_data)
 
----
-[문서 정보]
-- 문서 타입: {doc_type}
-- 총 슬라이드 수: {len(slides_data)}
-- 총 예상 발표 시간: {sum(s['voice_guide']['estimated_duration_sec'] for s in slides_data)}초
-
-[슬라이드별 요약]
-{json.dumps(slides_summary, ensure_ascii=False, indent=2)}
-
----
-[분석 요청사항]
-
-1. **전체 진단 (diagnosis)**
-   - 누락된 필수 섹션 파악 (missing_sections)
-   - 논리적 흐름 문제 (logic_flow_issues) - 예: "문제→해결책" 순서 오류
-   - 전체 완성도 점수 (overall_completeness): 0-100점
-   - 우선순위 높은 이슈 3가지 (priority_issues)
-
-2. **콘텐츠 품질 분석 (content_quality)**
-   - 텍스트 밀도 평가 (과다/부족 슬라이드 번호)
-   - 시각 자료 활용도
-   - 발표 시간 배분 문제
-
-3. **슬라이드별 디자인 피드백 (slide_feedback)**
-   - 각 슬라이드마다 구체적인 개선점 제안
-   - 예: {{"page": 1, "feedbacks": [{{"type": "content_overload", "severity": "high", "message": "..."}}]}}
-
-4. **구체적인 개선 제안 (recommendations)**
-   - critical: 반드시 수정해야 할 사항 (priority 1)
-   - important: 품질 향상을 위해 권장 (priority 2)  
-   - suggested: 추가 개선 아이디어 (priority 3)
-   - 각 항목은 {{"issue": "문제", "action": "구체적 행동", "priority": 숫자}} 형식
-
----
-[JSON 출력 포맷]
-{{
-    "diagnosis": {{
-        "overall_completeness": 숫자,
-        "missing_sections": ["섹션1", "섹션2", ...],
-        "logic_flow_issues": ["이슈1", "이슈2", ...],
-        "priority_issues": ["최우선 이슈 3개"]
-    }},
-    "content_quality": {{
-        "text_density_avg": 숫자,
-        "visual_balance_avg": 숫자,
-        "slides_too_heavy": [페이지번호, ...],
-        "slides_too_light": [페이지번호, ...]
-    }},
-    "slide_feedback": [
-        {{
-            "page": 1,
-            "feedbacks": [
-                {{
-                    "type": "content_overload|visual_imbalance|...",
-                    "severity": "high|medium|low",
-                    "message": "구체적인 피드백"
-                }}
-            ]
-        }}
-    ],
-    "recommendations": {{
-        "critical": [
-            {{"issue": "...", "action": "...", "priority": 1}}
-        ],
-        "important": [...],
-        "suggested": [...]
-    }}
-}}
-
-**중요**: 반드시 유효한 JSON만 출력하세요. 설명이나 마크다운은 포함하지 마세요.
-"""
+    prompt = build_ir_analysis_prompt(
+        strategy_context=strategy_context,
+        slides_summary=slides_summary,
+        doc_type=doc_type,
+        total_duration=total_duration
+    )
 
     try:
         response = gemini.model.generate_content(
             prompt,
             generation_config={
                 "response_mime_type": "application/json",
-                "temperature": 0.3  # 일관성 있는 분석을 위해 낮은 temperature
+                "temperature": 0.3
             }
         )
-        
+
         analysis_result = json.loads(response.text)
-        print("✅ Gemini 분석 완료!")
+        print("Gemini 분석 완료!")
         return analysis_result
-        
-    except json.JSONDecodeError as e:
-        print(f"⚠️ JSON 파싱 실패: {e}")
-        print(f"응답 내용: {response.text[:500]}")
-        return _get_fallback_analysis(slides_data, pitch_strategy)
+
     except Exception as e:
-        print(f"❌ Gemini 분석 실패: {e}")
+        print("Gemini 분석 실패:", e)
         return _get_fallback_analysis(slides_data, pitch_strategy)
 
 
 def _get_fallback_analysis(slides_data: List[Dict], pitch_strategy: Optional[Dict]) -> Dict:
-    """LLM 실패 시 기본 분석"""
-    print("⚙️ 기본 규칙 기반 분석으로 대체합니다...")
-    
+    print("⚙ 기본 규칙 기반 분석 수행")
+
     heavy_slides = [s['page_number'] for s in slides_data if s['voice_guide']['estimated_duration_sec'] > 100]
     light_slides = [s['page_number'] for s in slides_data if s['contents']['char_count'] < 30]
-    
+
     return {
         "diagnosis": {
             "overall_completeness": 50,
@@ -265,61 +189,53 @@ def _get_fallback_analysis(slides_data: List[Dict], pitch_strategy: Optional[Dic
         "recommendations": {
             "critical": [],
             "important": [],
-            "suggested": [{"issue": "AI 분석 실패", "action": "문서를 수동 검토하세요", "priority": 3}]
+            "suggested": [{"issue": "AI 분석 실패", "action": "문서를 수동 검토", "priority": 3}]
         }
     }
 
 
+
 def merge_llm_feedback_to_slides(slides_data: List[Dict], slide_feedback: List[Dict]) -> List[Dict]:
-    """LLM이 생성한 슬라이드별 피드백을 병합"""
     feedback_map = {item['page']: item['feedbacks'] for item in slide_feedback}
-    
+
     for slide in slides_data:
-        page_num = slide['page_number']
+        page_num = slide["page_number"]
         if page_num in feedback_map:
-            slide['design_feedback'] = feedback_map[page_num]
-    
+            slide["design_feedback"] = feedback_map[page_num]
+
     return slides_data
 
 
-# 🔥 메인 함수
+
 def export_final_json(
-    docai_result: Dict, 
-    layoutlm_result: Dict, 
+    docai_result: Dict,
+    layoutlm_result: Dict,
     output_path: str,
     pitch_strategy: Optional[Dict] = None
 ) -> Dict:
-    """
-    [V4 - LLM Powered] Gemini를 활용한 범용 문서 분석 시스템
-    """
-    print(f"\n" + "="*80)
-    print(f"📦 [V4 - LLM Powered] 최종 분석 JSON 생성")
-    print("="*80)
-    
-    # 1. Gemini 초기화
+
+    print("\n" + "=" * 80)
+    print("📦 [V4 - LLM Powered] 최종 분석 JSON 생성")
+    print("=" * 80)
+
     gemini = GeminiAnalyst()
-    
-    # 2. 기본 데이터 추출
+
     pages = docai_result.get("pages", [])
     doc_type = layoutlm_result.get("doc_type", "unknown")
-    
-    # 3. 슬라이드별 기본 정보 추출
+
     slides_data = extract_slide_contents(docai_result, pages)
-    
-    # 4. 🔥 Gemini로 심층 분석
-    llm_analysis = analyze_with_gemini(gemini, slides_data, pitch_strategy, doc_type)
-    
-    # 5. 슬라이드별 피드백 병합
+
+    llm_analysis = analyze_with_gemini(
+        gemini, slides_data, pitch_strategy, doc_type
+    )
+
     slides_data = merge_llm_feedback_to_slides(
-        slides_data, 
+        slides_data,
         llm_analysis.get("slide_feedback", [])
     )
-    
-    # 6. 최종 출력 JSON 구성
+
     total_duration = sum(s['voice_guide']['estimated_duration_sec'] for s in slides_data)
-    
-    # pitch_strategy 정보 정리
-    strategy_info = {}
+
     if pitch_strategy:
         strategy_info = {
             "type": pitch_strategy.get("type", "Unknown"),
@@ -332,7 +248,7 @@ def export_final_json(
             "type": "General Analysis",
             "focus_point": "범용 문서 분석 (공고문 없음)"
         }
-    
+
     final_output = {
         "meta": {
             "filename": docai_result.get("metadata", {}).get("filename", "unknown"),
@@ -347,22 +263,16 @@ def export_final_json(
         "recommendations": llm_analysis.get("recommendations", {}),
         "slides": slides_data
     }
-    
-    # 최종 출력값에서 full_text 제거 (용량 절약)
+
     for slide in final_output["slides"]:
         if "full_text" in slide["contents"]:
             del slide["contents"]["full_text"]
-    
-    # 7. JSON 저장
+
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(final_output, f, ensure_ascii=False, indent=2)
-    
-    # 8. 결과 요약 출력
-    print(f"\n✅ 분석 완료!")
-    print(f"   📄 파일: {output_path}")
-    print(f"   📊 완성도: {llm_analysis['diagnosis']['overall_completeness']}%")
-    print(f"   ⚠️  Critical 이슈: {len(llm_analysis['recommendations']['critical'])}개")
-    print(f"   💡 Important 이슈: {len(llm_analysis['recommendations']['important'])}개")
-    print(f"   ✨ Suggested 개선: {len(llm_analysis['recommendations']['suggested'])}개")
-    
+
+    print("\n완료!")
+    print("파일:", output_path)
+    print("완성도:", llm_analysis["diagnosis"]["overall_completeness"])
+
     return final_output
