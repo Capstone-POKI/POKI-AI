@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from src.docs_analysis.llm.gemini_client import GeminiAnalyst
 from src.docs_analysis.llm.prompts.ir_analysis_prompt import build_ir_analysis_prompt
@@ -62,13 +62,18 @@ def generate_voice_guide(text_len: int, duration: int) -> Dict:
 def extract_slide_contents(docai_result: Dict, pages: List[Dict]) -> List[Dict]:
     slides_data = []
     detected_sections = docai_result.get("detected_sections", [])
-    section_map = {s['page']: s['section'] for s in detected_sections}
+    # detected_sections가 리스트인지 딕셔너리인지 확인 후 처리
+    if isinstance(detected_sections, list):
+        section_map = {s['page']: s['section'] for s in detected_sections if 'page' in s}
+    else:
+        section_map = {}
 
     for idx, page in enumerate(pages):
         page_num = idx + 1
         section_type = section_map.get(page_num, "unknown")
 
         full_text = ""
+        # Document AI TextAnchor 처리
         for block in page.get("blocks", []):
             layout = block.get("layout", {})
             for segment in layout.get("textAnchor", {}).get("textSegments", []):
@@ -77,7 +82,7 @@ def extract_slide_contents(docai_result: Dict, pages: List[Dict]) -> List[Dict]:
                 full_text += docai_result.get("text", "")[start:end]
 
         text_len = len(full_text)
-        image_count = len(page.get("image", []))
+        image_count = len(page.get("image", [])) if "image" in page else 0 # 안전장치
 
         est_duration = estimate_speech_duration(full_text)
         visual_analysis = analyze_visual_balance(text_len, image_count)
@@ -156,8 +161,11 @@ def analyze_with_gemini(
                 "temperature": 0.3
             }
         )
-
-        analysis_result = json.loads(response.text)
+        
+        # 응답 텍스트 클리닝 (Markdown code block 제거)
+        cleaned_response = response.text.replace("```json", "").replace("```", "").strip()
+        analysis_result = json.loads(cleaned_response)
+        
         print("Gemini 분석 완료!")
         return analysis_result
 
@@ -180,7 +188,7 @@ def _get_fallback_analysis(slides_data: List[Dict], pitch_strategy: Optional[Dic
             "priority_issues": ["자동 분석 실패 - 수동 검토 필요"]
         },
         "content_quality": {
-            "text_density_avg": sum(s['contents']['char_count'] for s in slides_data) // len(slides_data),
+            "text_density_avg": sum(s['contents']['char_count'] for s in slides_data) // len(slides_data) if slides_data else 0,
             "visual_balance_avg": 50,
             "slides_too_heavy": heavy_slides,
             "slides_too_light": light_slides
@@ -194,17 +202,38 @@ def _get_fallback_analysis(slides_data: List[Dict], pitch_strategy: Optional[Dic
     }
 
 
-
 def merge_llm_feedback_to_slides(slides_data: List[Dict], slide_feedback: List[Dict]) -> List[Dict]:
-    feedback_map = {item['page']: item['feedbacks'] for item in slide_feedback}
+    """
+    LLM 분석 결과와 슬라이드 데이터를 병합 (KeyError 방지 적용)
+    """
+    feedback_map = {}
+    
+    for item in slide_feedback:
+        # 1. Page Key 찾기 (page, slide_id, slide_number 등 다양하게 대응)
+        page_key = item.get('page') or item.get('slide_id') or item.get('slide_number')
+        
+        # 2. Feedback Key 찾기 (feedbacks, feedback, design_feedback 등 다양하게 대응)
+        content = item.get('feedbacks') or item.get('feedback') or item.get('design_feedback') or item.get('message')
+        
+        # 3. 리스트 형태 보장
+        if isinstance(content, str):
+            content = [content]
+        elif content is None:
+            content = []
 
+        if page_key is not None:
+            try:
+                feedback_map[int(page_key)] = content
+            except ValueError:
+                pass # 숫자가 아닌 키는 무시
+
+    # 4. 병합 수행
     for slide in slides_data:
         page_num = slide["page_number"]
         if page_num in feedback_map:
             slide["design_feedback"] = feedback_map[page_num]
 
     return slides_data
-
 
 
 def export_final_json(
@@ -223,12 +252,15 @@ def export_final_json(
     pages = docai_result.get("pages", [])
     doc_type = layoutlm_result.get("doc_type", "unknown")
 
+    # 1. 슬라이드 내용 추출
     slides_data = extract_slide_contents(docai_result, pages)
 
+    # 2. Gemini 분석 수행
     llm_analysis = analyze_with_gemini(
         gemini, slides_data, pitch_strategy, doc_type
     )
 
+    # 3. 피드백 병합 (에러 수정된 함수 사용)
     slides_data = merge_llm_feedback_to_slides(
         slides_data,
         llm_analysis.get("slide_feedback", [])
@@ -264,6 +296,7 @@ def export_final_json(
         "slides": slides_data
     }
 
+    # 불필요한 full_text 제거 (용량 최적화)
     for slide in final_output["slides"]:
         if "full_text" in slide["contents"]:
             del slide["contents"]["full_text"]
@@ -273,6 +306,9 @@ def export_final_json(
 
     print("\n완료!")
     print("파일:", output_path)
-    print("완성도:", llm_analysis["diagnosis"]["overall_completeness"])
+    
+    # 안전장치: diagnosis 키가 없을 수도 있음
+    completeness = final_output.get("diagnosis", {}).get("overall_completeness", "N/A")
+    print("완성도:", completeness)
 
     return final_output

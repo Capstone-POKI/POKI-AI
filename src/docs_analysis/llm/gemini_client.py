@@ -1,8 +1,10 @@
 import json
 import os
 from google.oauth2 import service_account
-import vertexai
-from vertexai.generative_models import GenerativeModel
+
+# ❌ [삭제됨] 여기에 있으면 파일 읽자마자 멈춥니다!
+# import vertexai 
+# from vertexai.generative_models import GenerativeModel
 
 from src.docs_analysis.document_ai.config import PROJECT_ID
 from src.docs_analysis.llm.prompts.notice_analysis_prompt import build_notice_analysis_prompt
@@ -16,7 +18,7 @@ class GeminiAnalyst:
         print(f"\n☁️ Gemini AI 초기화 (Project: {self.project_id})")
         
         try:
-            # 1. 인증
+            # 1. 인증 (.env 활용)
             key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
             credentials = None
             if key_path:
@@ -26,29 +28,34 @@ class GeminiAnalyst:
                 if os.path.exists(key_path):
                     credentials = service_account.Credentials.from_service_account_file(key_path)
             
-            # 2. 초기화
+            # 2. 🔥 [중요] 여기서 로딩해야 멈추지 않습니다 (Lazy Import)
+            print("  ⚙️ Vertex AI 라이브러리 로딩 중... (여기서 시간이 좀 걸릴 수 있습니다)")
+            import vertexai
+            from vertexai.generative_models import GenerativeModel
+
+            # 3. 초기화
             if credentials:
                 vertexai.init(project=self.project_id, location=self.location, credentials=credentials)
             else:
                 vertexai.init(project=self.project_id, location=self.location)
 
-            # 3. 모델 로드 (Gemini 2.0 Flash Exp 권장 - 복잡한 추론용)
+            # 4. 모델 로드
             candidates = ["gemini-2.0-flash-exp", "gemini-1.5-flash-002", "gemini-1.5-flash-001"]
             for model_name in candidates:
                 try:
                     test_model = GenerativeModel(model_name)
                     self.model = test_model
                     self.model_name = model_name
-                    print(f"모델 연결 성공! 사용 모델: {model_name}")
+                    print(f"  ✅ 모델 연결 성공! 사용 모델: {model_name}")
                     break
                 except:
                     continue
             
             if self.model is None:
-                print("모든 모델 연결 실패.")
+                print("  ❌ 모든 모델 연결 실패.")
 
         except Exception as e:
-            print(f"초기화 오류: {e}")
+            print(f"  ❌ 초기화 오류: {e}")
             self.model = None
 
     def analyze_notice(self, notice_text: str) -> dict:
@@ -58,7 +65,7 @@ class GeminiAnalyst:
         if not self.model:
             return self._get_default_strategy()
 
-        # 👇 [변경] 프롬프트 빌더 함수 호출로 대체
+        # 분리된 프롬프트 사용
         prompt = build_notice_analysis_prompt(notice_text)
 
         try:

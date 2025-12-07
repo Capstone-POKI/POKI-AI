@@ -10,10 +10,15 @@ def build_ir_analysis_prompt(
 ) -> str:
     """
     업그레이드된 IR Deck 분석용 Prompt Builder
+    (원래 내용 복구 + f-string 충돌 해결 버전)
     """
 
     slides_json = json.dumps(slides_summary, ensure_ascii=False, indent=2)
 
+    # 🔥 f-string 사용 시:
+    # 1. 변수는 {변수명} (그대로 둠)
+    # 2. JSON 예시의 중괄호는 {{ }} (두 번 겹쳐야 함)
+    
     prompt = f"""
 당신은 다음 세 가지 역할을 동시에 수행하는 복합 전문가입니다:
 1) 벤처캐피탈 투자 심사역 (시장성·경쟁우위·재무 구조 분석)
@@ -109,28 +114,35 @@ Killer Q: 지원금이 종료된 후에도 매출이 유지될 수 있는 구조
 ※ reasoning은 내부적으로만 사용하고 출력 금지
 
 ────────────────────────────────
-[출력해야 할 JSON 구조 — 기존 완전 동일]
+[출력해야 할 JSON 구조]
+(반드시 아래 포맷을 따르되, 내용은 한국어로 작성하시오)
 
-{
-    "diagnosis": {
-        "overall_completeness": 숫자,
-        "missing_sections": [...],
-        "logic_flow_issues": [...],
-        "priority_issues": [...]
-    },
-    "content_quality": {
-        "text_density_avg": 숫자,
-        "visual_balance_avg": 숫자,
-        "slides_too_heavy": [...],
-        "slides_too_light": [...]
-    },
-    "slide_feedback": [...],
-    "recommendations": {
-        "critical": [...],
-        "important": [...],
-        "suggested": [...]
-    }
-}
+{{
+    "diagnosis": {{
+        "overall_completeness": 85,
+        "missing_sections": ["수익 모델", "팀 이력"],
+        "logic_flow_issues": ["문제 정의가 너무 모호함", "솔루션과 문제의 연결성 부족"],
+        "priority_issues": ["재무 데이터 부재", "경쟁 우위 불명확"]
+    }},
+    "content_quality": {{
+        "text_density_avg": 75,
+        "visual_balance_avg": 80,
+        "slides_too_heavy": [3, 5],
+        "slides_too_light": [1]
+    }},
+    "slide_feedback": [
+        {{
+            "slide_id": 1,
+            "score": 80,
+            "feedback": "도입부는 좋으나 훅(Hook)이 부족합니다."
+        }}
+    ],
+    "recommendations": {{
+        "critical": ["구체적인 수익 모델 추가"],
+        "important": ["문제 정의 구체화"],
+        "suggested": ["더 많은 시각 자료 활용"]
+    }}
+}}
 """
 
     return prompt.strip()
