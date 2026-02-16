@@ -4,3 +4,16 @@ credentials/
 .env
 /venv/
 /.venv/
+/clean_env/
+/clean_env_ssp/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Local worklogs
+WORKLOG_NOTICE_2026-02-16.md

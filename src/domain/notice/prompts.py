@@ -32,6 +32,8 @@ def build_notice_prompt(notice_text: str, tables: List[Dict[str, Any]]) -> str:
 - 점수와 비율이 동시에 존재하면 점수를 우선 사용
 - 총점 정보는 evaluation_criteria에 포함하지 말 것
 - 불확실한 경우 해당 항목을 생성하지 말 것
+- evaluation_criteria 각 항목마다 source_reference(원문 근거)를 반드시 포함할 것
+- source_reference는 해당 항목명/배점이 들어있는 원문 일부를 그대로 발췌할 것
 - extraction_confidence는 0~1 사이 숫자로 반환
 - evaluation_structure_type은 반드시 아래 4개 중 하나로만 반환:
   POINT_BASED | PERCENT_BASED | MIXED | NOT_EXPLICIT
@@ -52,6 +54,7 @@ def build_notice_prompt(notice_text: str, tables: List[Dict[str, Any]]) -> str:
     {{
       "criteria_name": "평가 항목명",
       "points": 0,
+      "source_reference": "해당 평가 항목/배점이 포함된 원문 문장 또는 표 셀 발췌",
       "sub_requirements": ["세부 요구사항1", "세부 요구사항2"],
       "pitchcoach_interpretation": "사용자에게 제공할 준비 가이드"
     }}
