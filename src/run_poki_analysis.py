@@ -1,5 +1,5 @@
 import json
-from src.report_engine.report_builder import build_final_report
+from src.domain.report.report_builder import build_final_report
 
 
 def run_poki_analysis():
