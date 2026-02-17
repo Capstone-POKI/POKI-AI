@@ -21,4 +21,5 @@ def analyze_ir(payload: IRAnalyzeRequest):
         output_dir=Path(payload.output_dir),
         strategy=strategy,
         use_chunking=not payload.no_chunking,
+        pitch_type=payload.pitch_type.value if payload.pitch_type else None,
     )
