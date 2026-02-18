@@ -10,6 +10,7 @@ from src.domain.notice.pipeline import init_gemini, run_notice_analysis
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="POKI-AI CLI")
     parser.add_argument("--mode", choices=["notice", "ir", "all"], default="all")
+    parser.add_argument("--pitch-type", choices=["ELEVATOR", "VC_DEMO", "GOVERNMENT", "COMPETITION"], default=None)
     parser.add_argument("--notice-pdf", default="data/input/sample_notice.pdf")
     parser.add_argument("--ir-pdf", default="data/input/sample_irdeck.pdf")
     parser.add_argument("--notice-output-dir", default="data/output/notice_analysis")
@@ -46,6 +47,7 @@ def main() -> None:
             output_dir=Path(args.ir_output_dir),
             strategy=strategy,
             use_chunking=not args.no_chunking,
+            pitch_type=args.pitch_type,
         )
 
 
