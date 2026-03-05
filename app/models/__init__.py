@@ -1,4 +1,4 @@
-from app.schemas.ir_schema import (
+from app.models.ir_schema import (
     AnalysisStatus,
     CriteriaScoreResponse,
     DeckScoreResponse,
@@ -12,7 +12,7 @@ from app.schemas.ir_schema import (
     IRUploadResponse,
     PresentationGuideResponse,
 )
-from app.schemas.notice_schema import (
+from app.models.notice_schema import (
     ErrorResponse as NoticeErrorResponse,
     NoticeResultCompletedResponse,
     NoticeResultFailedResponse,
