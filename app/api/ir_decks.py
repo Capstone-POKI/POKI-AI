@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Path as FPath, UploadFile
 
-from app.schemas.ir_schema import (
+from app.models.ir_schema import (
     AnalysisStatus,
     CriteriaScoreResponse,
     DeckScoreResponse,
@@ -26,7 +26,7 @@ from app.schemas.ir_schema import (
 from src.domain.ir.pipeline import run_ir_analysis
 
 try:
-    from app.routers import notice as notice_router_module
+    from app.api import notices as notice_router_module
 except Exception:  # pragma: no cover
     notice_router_module = None
 
