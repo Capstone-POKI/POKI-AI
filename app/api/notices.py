@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Path as FPath, UploadFile
 
-from app.schemas.notice_schema import (
+from app.models.notice_schema import (
     ErrorResponse,
     EvaluationCriteriaItem,
     NoticeAnalysisStatus,
@@ -20,7 +20,7 @@ from app.schemas.notice_schema import (
 )
 from src.domain.notice.pipeline import init_gemini, run_notice_analysis
 
-router = APIRouter(tags=["notice"])
+router = APIRouter(prefix="/api", tags=["notice"])
 
 MAX_NOTICE_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 NOTICE_UPLOAD_DIR = Path("data/output/notice_uploads")
@@ -252,7 +252,7 @@ def _run_notice_analysis_background(notice_id: str, pdf_path: Path) -> None:
 
 
 @router.post(
-    "/pitches/{pitch_id}/notice",
+    "/pitches/{pitch_id}/notices/analyze",
     response_model=NoticeUploadResponse,
     status_code=202,
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
