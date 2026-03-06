@@ -17,5 +17,5 @@ jobs:
           passphrase: ${{ secrets.SSH_PASSPHRASE }}
           script: |
             cd ~/Pitchcoach-AI && git pull origin main
-            cd ~ && docker compose down
+            docker compose down
             docker compose up -d --build
