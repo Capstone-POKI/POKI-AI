@@ -1,0 +1,1038 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "PitchCoach GT labels for tuning"
+  },
+  "labels": [
+    {
+      "label_id": "GT_001",
+      "filename": "sample_irdeck.pdf",
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 27,
+      "deck_quality": "AVERAGE",
+      "notes": "일회용컵 스마트 수거 시스템 '컵끼리' — NAWA, 2025년 제7회 과천시 창업아이디어 경진대회. 슬라이드 3=5, 7=9 중복.",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "expected_score_range": "11~13 (max 15)",
+          "related_slides": [
+            3,
+            4,
+            6,
+            8
+          ],
+          "key_evidence": "일회용컵 5000억개/년, 재활용률 1%, 소각비용 3900억원/년. 내부 이물질 비우기 불편, 분리배출 번거로움, 시설·인력 추가비용. 보증금제도·매장 내 금지 규제.",
+          "notes": "수치 기반 문제 정의 우수. 3=5 중복. 고객 페르소나/니즈 검증 부재."
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "expected_score_range": "10~13 (max 15)",
+          "related_slides": [
+            7,
+            10,
+            11,
+            12,
+            13
+          ],
+          "key_evidence": "'컵끼리' — 자동 세척·건조·수거, 압축, 텀블러 세척, 데이터 수집. 배출자→컵끼리→재활용 업체. Point1 회수율, Point2 보관·인건비·악취, Point3 텀블러 세척&데이터.",
+          "notes": "기능 설명 구체적, 제품 실물/3D. 7=9 중복. 차별점 명시적 정리 없음."
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "COVERED",
+          "expected_score_range": "15~19 (max 25)",
+          "related_slides": [
+            19,
+            20,
+            21,
+            22
+          ],
+          "key_evidence": "구매 2500만/5년 vs 렌탈 30만/월+소모품3만+서비스비2만. Unit Economics: 구매 월280만, 렌탈 월240만. TAM 21조→SAM 3.9조→SOM 7500억. 수요처 8개사 60대 15억.",
+          "notes": "TAM/SAM/SOM+UE+이중BM. 산출 근거 불명확. 경쟁사 직접 비교 미흡(포지셔닝 맵은 sl.15 별도)."
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "expected_score_range": "6~10 (max 20)",
+          "related_slides": [
+            18,
+            22,
+            23
+          ],
+          "key_evidence": "축제 하루 584개 회수(2024 세종축제). 일본 연장계약. 8개사 60대/15억(LOI/MOU). 글로벌 MOU: Fibertex, APTO 등. 미즈호 어드바이저리. SINANEN 입주.",
+          "notes": "실매출 없음. LOI/MOU 수준. 축제 실적은 유의미하나 지속 매출 아님."
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "COVERED",
+          "expected_score_range": "8~11 (max 15)",
+          "related_slides": [
+            25,
+            26
+          ],
+          "key_evidence": "서울(Global Biz): 정동현COO, 전태현, 권지호. 세종(Product): 박상우CTO, 배민규CHO, 김병석. 2022.11설립→23출시→24한일법인→25판매준비. CES 참가.",
+          "notes": "팀 존재. CEO 이름·약력 미명시. 멤버 상세경력 미기재."
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "expected_score_range": "3~5 (max 10)",
+          "related_slides": [
+            19,
+            20,
+            21
+          ],
+          "key_evidence": "구매 2500만/5년, 렌탈 30만/월. Unit Economics 구매 월280만, 렌탈 월240만.",
+          "notes": "가격구조/UE 존재. 투자·재무예측·BEP·번레이트·자금계획 전무."
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 14,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 15,
+          "expected_category": "COMPETITION"
+        },
+        {
+          "slide_number": 16,
+          "expected_category": "COMPETITION"
+        },
+        {
+          "slide_number": 17,
+          "expected_category": "COMPETITION"
+        },
+        {
+          "slide_number": 18,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 19,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 20,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 21,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 22,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 23,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 24,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 25,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 26,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 27,
+          "expected_category": "COVER"
+        }
+      ],
+      "filename_aliases": [
+        "경진대회_과천시_나와.pdf"
+      ]
+    },
+    {
+      "label_id": "GT_002",
+      "filename": "경진대회_과천시_웰니스박스.pdf",
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 21,
+      "deck_quality": "GOOD",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            6,
+            7,
+            8,
+            10
+          ]
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            3,
+            11,
+            12,
+            13
+          ]
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            14,
+            15,
+            16,
+            17,
+            19
+          ]
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            2,
+            20
+          ]
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            19
+          ]
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 14,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 15,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 16,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 17,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 18,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 19,
+          "expected_category": "FINANCE"
+        },
+        {
+          "slide_number": 20,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 21,
+          "expected_category": "COVER"
+        }
+      ]
+    },
+    {
+      "label_id": "GT_003",
+      "filename": "경진대회_과천시_주식회사봄젠.pdf",
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 13,
+      "deck_quality": "GOOD",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            3
+          ]
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            4,
+            5,
+            6,
+            7
+          ]
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            8,
+            9,
+            10
+          ]
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            12
+          ]
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            13
+          ]
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            11
+          ]
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "FINANCE"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "TEAM"
+        }
+      ]
+    },
+    {
+      "label_id": "GT_004",
+      "filename": "경진대회_과천시_주식회사자블리.pdf",
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 20,
+      "deck_quality": "GOOD",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            3,
+            4
+          ]
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            7
+          ]
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            3,
+            10,
+            11,
+            12,
+            14
+          ]
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            2,
+            9,
+            15,
+            16,
+            18
+          ]
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            2,
+            15,
+            16
+          ]
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            13,
+            19
+          ]
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 14,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 15,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 16,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 17,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 18,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 19,
+          "expected_category": "FINANCE"
+        },
+        {
+          "slide_number": 20,
+          "expected_category": "COVER"
+        }
+      ]
+    },
+    {
+      "label_id": "GT_005",
+      "filename": "경진대회_정창경10_스탁키퍼.pdf",
+      "filename_aliases": [
+        "경진대회_정창경10_스타키퍼.pdf"
+      ],
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 20,
+      "deck_quality": "GOOD",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            11,
+            19
+          ]
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            18
+          ]
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            20
+          ]
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            11
+          ]
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "FINANCE"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 14,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 15,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 16,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 17,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 18,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 19,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 20,
+          "expected_category": "TEAM"
+        }
+      ]
+    },
+    {
+      "label_id": "GT_006",
+      "filename": "경진대회_과천시_라이프다이버전스.pdf",
+      "filename_aliases": [
+        "경진대회_과천시_라이프다이버전스.pdf"
+      ],
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 18,
+      "deck_quality": "GOOD",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            5,
+            6,
+            7,
+            8
+          ]
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            9,
+            11,
+            12,
+            13,
+            15
+          ]
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            10
+          ]
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            17
+          ]
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            14,
+            16
+          ]
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "COMPETITION"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 14,
+          "expected_category": "FINANCE"
+        },
+        {
+          "slide_number": 15,
+          "expected_category": "PLAN"
+        },
+        {
+          "slide_number": 16,
+          "expected_category": "FINANCE"
+        },
+        {
+          "slide_number": 17,
+          "expected_category": "TEAM"
+        },
+        {
+          "slide_number": 18,
+          "expected_category": "COVER"
+        }
+      ]
+    },
+    {
+      "label_id": "GT_007",
+      "filename": "경진대회_정창경10_두들린.pdf",
+      "filename_aliases": [
+        "경진대회_정창경10_두드린.pdf"
+      ],
+      "pitch_type": "STARTUP_CONTEST",
+      "total_slides": 20,
+      "deck_quality": "GOOD",
+      "group_labels": [
+        {
+          "group_id": "PROBLEM",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        {
+          "group_id": "SOLUTION",
+          "expected_coverage": "COVERED",
+          "related_slides": [
+            8,
+            9,
+            10,
+            11,
+            12,
+            14,
+            20
+          ]
+        },
+        {
+          "group_id": "MARKET_BM",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            4,
+            6,
+            19
+          ]
+        },
+        {
+          "group_id": "TRACTION",
+          "expected_coverage": "PARTIALLY_COVERED",
+          "related_slides": [
+            15,
+            17,
+            18
+          ]
+        },
+        {
+          "group_id": "TEAM",
+          "expected_coverage": "NOT_COVERED",
+          "related_slides": []
+        },
+        {
+          "group_id": "FINANCE",
+          "expected_coverage": "NOT_COVERED",
+          "related_slides": []
+        }
+      ],
+      "slide_classification_labels": [
+        {
+          "slide_number": 1,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 2,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 3,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 4,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 5,
+          "expected_category": "PROBLEM"
+        },
+        {
+          "slide_number": 6,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 7,
+          "expected_category": "MARKET"
+        },
+        {
+          "slide_number": 8,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 9,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 10,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 11,
+          "expected_category": "SOLUTION"
+        },
+        {
+          "slide_number": 12,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 13,
+          "expected_category": "COVER"
+        },
+        {
+          "slide_number": 14,
+          "expected_category": "PRODUCT"
+        },
+        {
+          "slide_number": 15,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 16,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 17,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 18,
+          "expected_category": "TRACTION"
+        },
+        {
+          "slide_number": 19,
+          "expected_category": "BUSINESS_MODEL"
+        },
+        {
+          "slide_number": 20,
+          "expected_category": "PRODUCT"
+        }
+      ]
+    }
+  ]
+}
