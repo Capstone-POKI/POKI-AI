@@ -1,0 +1,7 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "Optional external rubric file. If a pitch_type rubric is missing, code falls back to internal default rubric."
+  },
+  "rubrics": {}
+}
