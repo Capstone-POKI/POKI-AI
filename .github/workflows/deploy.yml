@@ -14,6 +14,8 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ec2-user
           key: ${{ secrets.EC2_KEY }}
+          passphrase: ${{ secrets.SSH_PASSPHRASE }}
           script: |
-            cd ~/Pitchcoach-AI && git pull origin main
-            cd ~ && docker compose down && docker compose up -d --build
+            cd ~
+            docker compose pull
+            docker compose up -d --build
