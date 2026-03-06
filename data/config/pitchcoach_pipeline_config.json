@@ -1,0 +1,23 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "PitchCoach IR pipeline tuning defaults"
+  },
+  "matching": {
+    "similarity_threshold": {
+      "high": 0.58,
+      "mid": 0.48,
+      "low": 0.38
+    },
+    "top_k": 2
+  },
+  "llm": {
+    "default_slide_limit": 12,
+    "fast_mode": false
+  },
+  "category_alias": {
+    "PLAN": "ASK",
+    "BM": "BUSINESS_MODEL",
+    "COMPETITION": "STARTUP_CONTEST"
+  }
+}

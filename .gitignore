@@ -1,6 +1,7 @@
 # Credentials
 credentials/
 *.json
+!data/config/*.json
 .env
 /venv/
 /.venv/

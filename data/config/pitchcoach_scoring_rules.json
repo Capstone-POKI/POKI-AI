@@ -1,0 +1,38 @@
+{
+  "_meta": {
+    "version": "1.0.0",
+    "description": "PitchCoach score cap rules"
+  },
+  "hard_rules": [
+    {
+      "rule_id": "PR_01",
+      "pitch_type": "ALL",
+      "if": {"problem": "NOT_COVERED", "solution": "NOT_COVERED"},
+      "deck_total_cap": 30
+    },
+    {
+      "rule_id": "PR_02",
+      "pitch_type": "ALL",
+      "if": {"market_bm": "NOT_COVERED"},
+      "deck_total_cap": 50
+    },
+    {
+      "rule_id": "PR_03",
+      "pitch_type": "VC_DEMO",
+      "if": {"traction": "NOT_COVERED"},
+      "deck_total_cap": 60
+    },
+    {
+      "rule_id": "PR_04",
+      "pitch_type": "GOV_SUPPORT",
+      "if": {"finance": "NOT_COVERED"},
+      "deck_total_cap": 50
+    },
+    {
+      "rule_id": "PR_06",
+      "pitch_type": "STARTUP_CONTEST",
+      "if": {"solution": "NOT_COVERED"},
+      "deck_total_cap": 40
+    }
+  ]
+}
