@@ -75,4 +75,3 @@ class NoticeUpdateRequest(BaseModel):
     application_period: str | None = None
     evaluation_criteria: list[EvaluationCriteriaUpdateItem] | None = None
     additional_criteria: str | None = None
-

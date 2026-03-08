@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 import requests
@@ -41,15 +41,25 @@ class GeminiJSONClient:
             self.model_candidates = []
             self.api_key = None
 
-    def generate_json(self, prompt: str, temperature: float = 0.2) -> Dict[str, Any]:
+    def generate_json(
+        self,
+        prompt: str,
+        temperature: float = 0.2,
+        response_schema: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         if self.model is None or self.api_key is None or not self.model_candidates:
             raise RuntimeError("Gemini model is not available")
 
+        generation_config: Dict[str, Any] = {
+            "temperature": temperature,
+            "responseMimeType": "application/json",
+        }
+        if response_schema:
+            generation_config["responseSchema"] = response_schema
+
         payload: Dict[str, Any] = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-            },
+            "generationConfig": generation_config,
         }
         headers = {
             "Content-Type": "application/json",
@@ -58,12 +68,13 @@ class GeminiJSONClient:
 
         last_error = ""
         for model_name in self.model_candidates:
-            url = "https://generativelanguage.googleapis.com/v1/models/" f"{quote(model_name)}:generateContent"
+            api_version = "v1beta" if response_schema else "v1"
+            url = f"https://generativelanguage.googleapis.com/{api_version}/models/{quote(model_name)}:generateContent"
             response = requests.post(
                 url,
                 headers=headers,
                 json=payload,
-                timeout=60,
+                timeout=120,
             )
 
             if response.status_code == 404:
