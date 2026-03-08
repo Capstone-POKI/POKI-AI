@@ -8,6 +8,9 @@ credentials/
 /clean_env/
 /clean_env_ssp/
 
+# Uploaded/output data
+data/output/
+
 # Python caches
 __pycache__/
 *.py[cod]

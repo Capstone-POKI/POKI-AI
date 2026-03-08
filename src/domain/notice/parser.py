@@ -8,6 +8,70 @@ from src.infrastructure.gemini.client import GeminiJSONClient
 Number = Union[int, float]
 
 
+NOTICE_RESPONSE_SCHEMA: Dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {
+        "notice_name": {"type": "STRING"},
+        "host_organization": {"type": "STRING"},
+        "recruitment_type": {"type": "STRING"},
+        "target_audience": {"type": "STRING"},
+        "application_period": {"type": "STRING"},
+        "summary": {"type": "STRING"},
+        "core_requirements": {"type": "STRING"},
+        "source_reference": {"type": "STRING"},
+        "evaluation_structure_type": {"type": "STRING"},
+        "extraction_confidence": {"type": "NUMBER"},
+        "additional_criteria": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "item": {"type": "STRING"},
+                    "points": {"type": "NUMBER"},
+                },
+                "required": ["item", "points"],
+            },
+        },
+        "evaluation_criteria": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "criteria_name": {"type": "STRING"},
+                    "points": {"type": "NUMBER"},
+                    "source_reference": {"type": "STRING"},
+                    "sub_requirements": {
+                        "type": "ARRAY",
+                        "items": {"type": "STRING"},
+                    },
+                    "pitchcoach_interpretation": {"type": "STRING"},
+                    "ir_guide": {"type": "STRING"},
+                },
+                "required": [
+                    "criteria_name",
+                    "points",
+                    "pitchcoach_interpretation",
+                    "ir_guide",
+                ],
+            },
+        },
+        "ir_deck_guide": {"type": "STRING"},
+    },
+    "required": [
+        "notice_name",
+        "host_organization",
+        "recruitment_type",
+        "target_audience",
+        "application_period",
+        "summary",
+        "core_requirements",
+        "additional_criteria",
+        "evaluation_criteria",
+        "ir_deck_guide",
+    ],
+}
+
+
 def analyze_notice(
     gemini: Optional[GeminiJSONClient],
     notice_text: str,
@@ -18,9 +82,16 @@ def analyze_notice(
 
     prompt = build_notice_prompt(notice_text, tables)
     try:
-        raw = gemini.generate_json(prompt, temperature=0.2)
+        raw = gemini.generate_json(
+            prompt,
+            temperature=0.2,
+            response_schema=NOTICE_RESPONSE_SCHEMA,
+        )
         return normalize_notice_result(raw, tables=tables, notice_text=notice_text)
-    except Exception:
+    except Exception as exc:
+        import traceback
+        print(f"❌ [analyze_notice] Gemini 호출 실패: {exc}")
+        traceback.print_exc()
         return empty_notice_result()
 
 
@@ -37,6 +108,7 @@ def empty_notice_result() -> Dict[str, Any]:
         "evaluation_structure_type": "NOT_EXPLICIT",
         "extraction_confidence": 0.0,
         "evaluation_criteria": [],
+        "additional_criteria": [],
         "ir_deck_guide": "",
     }
 
@@ -65,6 +137,7 @@ def normalize_notice_result(
         tables=tables,
         notice_text=notice_text,
     )
+    normalized["additional_criteria"] = _normalize_additional_criteria(raw.get("additional_criteria"))
     normalized["ir_deck_guide"] = _to_str(raw.get("ir_deck_guide"))
 
     # Backward compatibility for older prompt outputs.
@@ -92,7 +165,16 @@ def normalize_notice_result(
             notice_text=notice_text,
         )
 
-    normalized["evaluation_criteria"] = _filter_non_evaluation_criteria(normalized["evaluation_criteria"])
+    filtered, bonus_items = _filter_and_capture_bonus_criteria(normalized["evaluation_criteria"])
+    normalized["evaluation_criteria"] = filtered
+    if bonus_items and not normalized["additional_criteria"]:
+        normalized["additional_criteria"] = bonus_items
+
+    # Fallback: extract 우대사항 from tables/text if still empty
+    if not normalized["additional_criteria"]:
+        normalized["additional_criteria"] = _extract_additional_criteria_from_sources(
+            tables or [], notice_text,
+        )
 
     normalized["extraction_confidence"] = _adjust_confidence_by_points_quality(
         normalized["extraction_confidence"],
@@ -120,6 +202,7 @@ def _normalize_criteria_list(
         raw_points_text = _to_str(raw_item.get("raw_points_text"))
         source_snippet = _to_str(raw_item.get("source_snippet"))
         interpretation = _to_str(raw_item.get("pitchcoach_interpretation"))
+        ir_guide = _to_str(raw_item.get("ir_guide"))
 
         points = _to_number(raw_item.get("points"))
         if points is None:
@@ -138,6 +221,7 @@ def _normalize_criteria_list(
                 "points": points if points is not None else 0,
                 "sub_requirements": _to_str_list(raw_item.get("sub_requirements")),
                 "pitchcoach_interpretation": interpretation,
+                "ir_guide": ir_guide,
             }
         )
     return items
@@ -382,35 +466,37 @@ def _alias_pattern(alias: str) -> str:
     return r"\s*".join(tokens)
 
 
-def _filter_non_evaluation_criteria(criteria: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    blocked_tokens = [
-        "가산점",
-        "우대",
-        "참여율",
-        "출석",
-        "자격",
-        "자격요건",
-        "지원자격",
-        "신청자격",
-        "제출",
-        "접수",
-        "의무",
-        "지역",
-        "청년",
-        "거주",
-        "소재",
+def _filter_and_capture_bonus_criteria(
+    criteria: List[Dict[str, Any]],
+) -> tuple:
+    """Filter out non-evaluation items. Bonus/우대 items are captured as structured list."""
+    bonus_tokens = ["가산점", "우대"]
+    non_eval_tokens = [
+        "참여율", "출석", "자격", "자격요건", "지원자격",
+        "신청자격", "제출", "접수", "의무",
     ]
+
     filtered: List[Dict[str, Any]] = []
+    bonus_items: List[Dict[str, Any]] = []
+
     for item in criteria:
         if not isinstance(item, dict):
             continue
         name = _to_str(item.get("criteria_name"))
         interp = _to_str(item.get("pitchcoach_interpretation"))
         combined = f"{name} {interp}".replace(" ", "")
-        if any(token in combined for token in blocked_tokens):
+
+        if any(token in combined for token in bonus_tokens):
+            points = _to_number(item.get("points")) or 0
+            bonus_items.append({"item": name, "points": int(points)})
             continue
+
+        if any(token in combined for token in non_eval_tokens):
+            continue
+
         filtered.append(item)
-    return filtered
+
+    return filtered, bonus_items
 
 
 def _adjust_confidence_by_points_quality(confidence: float, criteria: List[Dict[str, Any]]) -> float:
@@ -477,3 +563,68 @@ def _infer_structure_type(criteria: List[Dict[str, Any]]) -> str:
     if has_percent:
         return "PERCENT_BASED"
     return "NOT_EXPLICIT"
+
+
+def _normalize_additional_criteria(value: Any) -> List[Dict[str, Any]]:
+    """Normalize additional_criteria from Gemini: list of {item, points} or string fallback."""
+    if isinstance(value, list):
+        items: List[Dict[str, Any]] = []
+        for raw in value:
+            if isinstance(raw, dict):
+                item_name = _to_str(raw.get("item"))
+                pts = _to_number(raw.get("points")) or 0
+                if item_name:
+                    items.append({"item": item_name, "points": int(pts)})
+        return items
+    # Legacy string fallback: parse "항목: N점" patterns
+    if isinstance(value, str) and value.strip():
+        return _parse_additional_criteria_string(value)
+    return []
+
+
+def _parse_additional_criteria_string(text: str) -> List[Dict[str, Any]]:
+    """Parse a free-text additional_criteria string into structured items."""
+    items: List[Dict[str, Any]] = []
+    # Match patterns like "서초구 본점 소재: 3점" or "서초구 본점 소재 기업(3점)"
+    for m in re.finditer(r"([^,;()\d]+?)\s*[:(]\s*(\d+)\s*점?\s*\)?", text):
+        name = m.group(1).strip().rstrip(":( ")
+        pts = int(m.group(2))
+        if name and len(name) >= 2:
+            items.append({"item": name, "points": pts})
+    return items
+
+
+def _extract_additional_criteria_from_sources(
+    tables: List[Dict[str, Any]],
+    notice_text: str,
+) -> List[Dict[str, Any]]:
+    """Fallback: scan tables and text for 우대사항/가산점 rows."""
+    bonus_keywords = ["우대", "가산", "가점", "우대사항", "우대점수", "추가배점"]
+
+    # 1) Search tables for bonus rows
+    for table in tables:
+        rows = table.get("rows", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            row_text = " ".join(_to_str(cell) for cell in row)
+            row_normalized = row_text.replace(" ", "")
+            if any(kw in row_normalized for kw in bonus_keywords):
+                parsed = _parse_additional_criteria_string(row_text)
+                if parsed:
+                    return parsed
+
+    # 2) Search text blocks around bonus keywords
+    cleaned_text = _to_str(notice_text)
+    for kw in bonus_keywords:
+        for match in re.finditer(re.escape(kw), cleaned_text):
+            start = max(0, match.start() - 50)
+            end = min(len(cleaned_text), match.end() + 300)
+            block = cleaned_text[start:end].strip()
+            parsed = _parse_additional_criteria_string(block)
+            if parsed:
+                return parsed
+
+    return []
