@@ -50,6 +50,8 @@ class NoticeCriteriaRow:
     parent_id: str | None = None
     pitchcoach_interpretation: str | None = None
     ir_guide: str | None = None
+    source_reference: str | None = None
+    sub_requirements: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=_now)
     updated_at: datetime = field(default_factory=_now)
 
@@ -70,7 +72,9 @@ class NoticeRow:
     summary: str | None = None
     core_requirements: str | None = None
     source_reference: str | None = None
-    additional_criteria: str | None = None
+    evaluation_structure_type: str | None = None
+    extraction_confidence: float | None = None
+    additional_criteria: list[dict] = field(default_factory=list)
     ir_deck_guide: str | None = None
     analysis_status: NoticeAnalysisStatus = NoticeAnalysisStatus.IN_PROGRESS
     error_message: str | None = None
@@ -93,8 +97,10 @@ def _infer_pitch_type(recruitment_type: str | None, fallback: str = "VC_DEMO") -
     text = (recruitment_type or "").lower()
     if "정부" in text or "support" in text or "government" in text:
         return "GOV_SUPPORT"
-    if "경진" in text or "contest" in text or "competition" in text or "comp" in text:
+    if any(kw in text for kw in ["경진", "공모전", "contest", "competition", "comp"]):
         return "STARTUP_CONTEST"
+    if any(kw in text for kw in ["데모데이", "피칭대회", "ir 데모", "ir 피칭"]):
+        return "VC_DEMO"
     return fallback
 
 
@@ -137,6 +143,45 @@ def _compute_importance(points: int | None) -> str | None:
     return "LOW"
 
 
+def _generate_ir_guide_from_interp(name: str, points: int, interp: str) -> str:
+    """Generate a specific ir_guide from pitchcoach_interpretation when Gemini didn't provide one."""
+    if not interp:
+        return f"{name}({points}점) 평가 기준에 맞는 핵심 데이터와 시각 자료를 슬라이드에 포함하세요."
+    # Build slide-oriented guide from interpretation keywords
+    guide_parts: list[str] = []
+    keyword_map = {
+        "매출": "매출 추이 그래프",
+        "수익": "수익 구조 다이어그램",
+        "시장": "시장 규모(TAM/SAM/SOM) 차트",
+        "고객": "고객 세그먼트 분석표",
+        "기술": "기술 아키텍처 다이어그램",
+        "특허": "특허/IP 현황 표",
+        "팀": "핵심 팀원 프로필 및 조직도",
+        "경쟁": "경쟁사 비교 매트릭스",
+        "실적": "주요 실적 지표 시계열 그래프",
+        "트랙션": "트랙션 지표(MAU/전환율 등) 대시보드",
+        "BM": "비즈니스 모델 캔버스",
+        "비즈니스 모델": "비즈니스 모델 캔버스",
+        "로드맵": "마일스톤 타임라인",
+        "예산": "항목별 예산 배분표",
+        "자금": "자금 사용 계획표 및 번다운 차트",
+        "MVP": "MVP 스크린샷 또는 데모 화면",
+        "프로토타입": "프로토타입 스크린샷",
+        "사용자": "사용자 피드백/설문 결과 요약",
+        "파일럿": "파일럿 실증 결과 요약 표",
+        "성장": "성장률 추이 그래프",
+        "문제": "문제 규모/영향 인포그래픽",
+        "솔루션": "문제-솔루션 매핑 다이어그램",
+        "차별": "차별화 포인트 비교표",
+    }
+    for keyword, visual in keyword_map.items():
+        if keyword in interp and visual not in guide_parts:
+            guide_parts.append(visual)
+    if not guide_parts:
+        return f"{name}({points}점) 항목의 핵심 근거 데이터와 시각 자료(차트/표/다이어그램)를 슬라이드에 포함하세요."
+    return ", ".join(guide_parts[:5]) + "를 슬라이드에 포함하세요."
+
+
 def _normalize_criteria_rows(criteria: list[dict], pitch_type: str, notice_id: str) -> list[NoticeCriteriaRow]:
     normalized: list[NoticeCriteriaRow] = []
     for row in criteria:
@@ -146,12 +191,21 @@ def _normalize_criteria_rows(criteria: list[dict], pitch_type: str, notice_id: s
         guide = str(row.get("ir_guide", "")).strip()
         if not name:
             continue
+        # Only fall back to templates if Gemini didn't provide content
         if not interp or not guide:
             for t_name, _p, t_interp, t_guide in _criterion_templates(pitch_type):
-                if t_name == name:
+                if t_name == name or t_name in name or name in t_name:
                     interp = interp or t_interp
                     guide = guide or t_guide
                     break
+        # If guide is still empty, generate from interpretation
+        if not guide:
+            safe_pts = max(0, min(100, points))
+            guide = _generate_ir_guide_from_interp(name, safe_pts, interp)
+        src_ref = str(row.get("source_reference", "")).strip()
+        sub_reqs = row.get("sub_requirements", [])
+        if not isinstance(sub_reqs, list):
+            sub_reqs = []
         safe_points = max(0, min(100, points))
         normalized.append(
             NoticeCriteriaRow(
@@ -161,8 +215,10 @@ def _normalize_criteria_rows(criteria: list[dict], pitch_type: str, notice_id: s
                 points=safe_points,
                 importance=_compute_importance(safe_points),
                 display_order=len(normalized) + 1,
-                pitchcoach_interpretation=interp or f"{name} 항목을 중심으로 평가합니다.",
-                ir_guide=guide or f"{name} 관련 근거와 실행 계획을 슬라이드에 포함하세요.",
+                pitchcoach_interpretation=interp or f"{name}({safe_points}점) 항목에서 요구하는 핵심 내용을 구체적으로 준비해야 합니다.",
+                ir_guide=guide,
+                source_reference=src_ref or None,
+                sub_requirements=[str(s) for s in sub_reqs if s],
             )
         )
     return normalized
@@ -188,15 +244,47 @@ def _default_criteria_rows(pitch_type: str, notice_id: str) -> list[NoticeCriter
 
 def _criteria_rows_to_api_items(rows: list[NoticeCriteriaRow]) -> list[EvaluationCriteriaItem]:
     ordered = sorted(rows, key=lambda x: x.display_order)
-    return [
-        EvaluationCriteriaItem(
-            criteria_name=row.criteria_name,
-            points=row.points,
-            pitchcoach_interpretation=row.pitchcoach_interpretation or f"{row.criteria_name} 항목을 평가합니다.",
-            ir_guide=row.ir_guide or f"{row.criteria_name} 관련 근거를 제시하세요.",
+    items: list[EvaluationCriteriaItem] = []
+    for row in ordered:
+        interp = row.pitchcoach_interpretation or f"{row.criteria_name} 항목을 평가합니다."
+        # Enrich pitchcoach_interpretation with sub_requirements and source_reference
+        parts = [interp]
+        if row.sub_requirements:
+            parts.append(f"[세부 요구사항] {', '.join(row.sub_requirements)}")
+        if row.source_reference:
+            parts.append(f"[원문 근거] {row.source_reference}")
+        items.append(
+            EvaluationCriteriaItem(
+                criteria_name=row.criteria_name,
+                points=row.points,
+                pitchcoach_interpretation="\n".join(parts),
+                ir_guide=row.ir_guide or f"{row.criteria_name} 관련 근거를 제시하세요.",
+            )
         )
-        for row in ordered
-    ]
+    return items
+
+
+def _format_additional_criteria(items: list[dict]) -> str | None:
+    """Convert structured additional_criteria list to display string."""
+    if not items:
+        return None
+    parts = [f"{ac.get('item', '')}: {ac.get('points', 0)}점" for ac in items if ac.get("item")]
+    total = sum(ac.get("points", 0) for ac in items)
+    if parts:
+        return ", ".join(parts) + f" (총 {total}점)"
+    return None
+
+
+def _build_ir_deck_guide(row: NoticeRow) -> str:
+    """Merge summary + core_requirements into ir_deck_guide."""
+    parts: list[str] = []
+    if row.summary:
+        parts.append(f"[공고 요약]\n{row.summary}")
+    if row.core_requirements:
+        parts.append(f"[핵심 요구사항]\n{row.core_requirements}")
+    if row.ir_deck_guide:
+        parts.append(f"[IR Deck 가이드]\n{row.ir_deck_guide}")
+    return "\n\n".join(parts) if parts else f"{row.pitch_type} 기반 IR Deck 가이드 템플릿..."
 
 
 def _next_notice_version(pitch_id: str) -> int:
@@ -227,6 +315,10 @@ def _run_notice_analysis_background(notice_id: str, pdf_path: Path) -> None:
             row.summary = (analysis.get("summary") or None) if isinstance(analysis, dict) else None
             row.core_requirements = (analysis.get("core_requirements") or None) if isinstance(analysis, dict) else None
             row.source_reference = (analysis.get("source_reference") or None) if isinstance(analysis, dict) else None
+            row.evaluation_structure_type = (analysis.get("evaluation_structure_type") or None) if isinstance(analysis, dict) else None
+            row.extraction_confidence = float(analysis.get("extraction_confidence", 0)) if isinstance(analysis, dict) else None
+            raw_ac = analysis.get("additional_criteria") if isinstance(analysis, dict) else []
+            row.additional_criteria = raw_ac if isinstance(raw_ac, list) else []
             row.ir_deck_guide = (analysis.get("ir_deck_guide") or None) if isinstance(analysis, dict) else None
             criteria = analysis.get("evaluation_criteria") if isinstance(analysis, dict) else None
             if isinstance(criteria, list):
@@ -358,9 +450,8 @@ def get_notice_result(notice_id: str = FPath(..., description="Notice ID")):
         target_audience=row.target_audience,
         application_period=row.application_period,
         evaluation_criteria=criteria,
-        additional_criteria=row.additional_criteria,
-        ir_deck_guide=row.ir_deck_guide
-        or f"{row.pitch_type} 기반 IR Deck 가이드 템플릿...",
+        additional_criteria=_format_additional_criteria(row.additional_criteria),
+        ir_deck_guide=_build_ir_deck_guide(row),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -427,9 +518,8 @@ def patch_notice(notice_id: str, payload: NoticeUpdateRequest):
             target_audience=row.target_audience,
             application_period=row.application_period,
             evaluation_criteria=criteria,
-            additional_criteria=row.additional_criteria,
-            ir_deck_guide=row.ir_deck_guide
-            or f"{row.pitch_type} 기반 IR Deck 가이드 템플릿...",
+            additional_criteria=_format_additional_criteria(row.additional_criteria),
+            ir_deck_guide=_build_ir_deck_guide(row),
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
