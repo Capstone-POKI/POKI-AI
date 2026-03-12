@@ -16,6 +16,12 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           passphrase: ${{ secrets.SSH_PASSPHRASE }}
           script: |
-            cd ~/Pitchcoach-AI && git pull origin main
-            docker compose down
+            sudo fuser -k 8000/tcp || true
+            docker ps --filter "publish=8000" -q | xargs -r docker rm -f || true
+            cd ~/Pitchcoach-AI
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            docker compose config -q
+            docker compose down --remove-orphans || true
             docker compose up -d --build
