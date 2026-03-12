@@ -1,4 +1,4 @@
-from app.models.ir_schema import (
+from app.models.deck_schema import (
     AnalysisStatus,
     CriteriaScoreResponse,
     DeckScoreResponse,

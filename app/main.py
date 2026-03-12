@@ -1,8 +1,12 @@
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.api.health import router as health_router
-from app.api.ir_decks import router as ir_router
+from app.api.decks import router as ir_router
 from app.api.notices import router as notice_router
 
 app = FastAPI(title="POKI-AI Service", version="0.1.0")
