@@ -283,14 +283,40 @@ def _extract_block_text(block: Dict, full_text: str) -> str:
     return " ".join(texts).strip()
 
 
+def _rebase_text_anchors(page: Dict, offset: int) -> None:
+    """페이지 내 모든 textAnchor의 startIndex/endIndex를 offset만큼 이동"""
+    if offset == 0:
+        return
+
+    def _shift_anchor(obj: Dict) -> None:
+        layout = obj.get("layout", {})
+        anchor = layout.get("textAnchor", {})
+        for seg in anchor.get("textSegments", []):
+            if "startIndex" in seg:
+                seg["startIndex"] = int(seg["startIndex"]) + offset
+            if "endIndex" in seg:
+                seg["endIndex"] = int(seg["endIndex"]) + offset
+
+    for block in page.get("blocks", []):
+        _shift_anchor(block)
+        for paragraph in block.get("paragraphs", []):
+            _shift_anchor(paragraph)
+            for word in paragraph.get("words", []):
+                _shift_anchor(word)
+            for token in paragraph.get("tokens", []):
+                _shift_anchor(token)
+        for line in block.get("lines", []):
+            _shift_anchor(line)
+
+
 def merge_chunk_results(chunk_results: List[Dict], output_path: str) -> Dict:
-    """여러 청크 결과를 하나로 병합"""
-    
+    """여러 청크 결과를 하나로 병합 (textAnchor 오프셋 보정 포함)"""
+
     if not chunk_results:
-        raise ValueError("❌ 병합할 청크 결과가 없습니다.")
-    
-    print(f"\n🔗 {len(chunk_results)}개 청크 결과 병합 중...")
-    
+        raise ValueError("병합할 청크 결과가 없습니다.")
+
+    print(f"\n{len(chunk_results)}개 청크 결과 병합 중...")
+
     merged = {
         "text": "",
         "pages": [],
@@ -304,32 +330,42 @@ def merge_chunk_results(chunk_results: List[Dict], output_path: str) -> Dict:
             "total_chunks": len(chunk_results)
         }
     }
-    
+
+    text_offset = 0
     page_offset = 0
-    
+
     for chunk in chunk_results:
-        merged["text"] += chunk.get("text", "")
-        
-        for page in chunk.get("pages", []):
+        chunk_text = chunk.get("text", "")
+        chunk_pages = chunk.get("pages", [])
+
+        # 각 페이지의 textAnchor 오프셋을 merged text 기준으로 재계산
+        for page in chunk_pages:
+            _rebase_text_anchors(page, text_offset)
             page["original_page_number"] = page_offset + page.get("pageNumber", 0)
             merged["pages"].append(page)
-        
-        page_offset += len(chunk.get("pages", []))
-        
+
+        merged["text"] += chunk_text
+
         for section in chunk.get("detected_sections", []):
-            section["page"] += page_offset - len(chunk.get("pages", []))
+            section["page"] += page_offset
             merged["detected_sections"].append(section)
-        
+
         numbers = chunk.get("extracted_numbers", {})
         for num_type in ["currency", "percentage", "quantity"]:
-            merged["extracted_numbers"][num_type].extend(numbers.get(num_type, []))
-    
+            for item in numbers.get(num_type, []):
+                if "position" in item:
+                    item["position"] = int(item["position"]) + text_offset
+                merged["extracted_numbers"][num_type].append(item)
+
+        text_offset += len(chunk_text)
+        page_offset += len(chunk_pages)
+
     merged["metadata"]["total_pages"] = len(merged["pages"])
     merged["metadata"]["total_blocks"] = sum(
         len(p.get("blocks", [])) for p in merged["pages"]
     )
-    
+
     save_json(merged, output_path)
-    print(f"✅ 병합 완료: {output_path}\n")
-    
+    print(f"병합 완료: {output_path}\n")
+
     return merged

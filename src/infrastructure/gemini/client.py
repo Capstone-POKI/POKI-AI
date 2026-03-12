@@ -68,7 +68,7 @@ class GeminiJSONClient:
 
         last_error = ""
         for model_name in self.model_candidates:
-            api_version = "v1beta" if response_schema else "v1"
+            api_version = "v1beta"
             url = f"https://generativelanguage.googleapis.com/{api_version}/models/{quote(model_name)}:generateContent"
             response = requests.post(
                 url,
@@ -77,8 +77,8 @@ class GeminiJSONClient:
                 timeout=120,
             )
 
-            if response.status_code == 404:
-                last_error = f"{model_name}: 404"
+            if response.status_code in (404, 400, 429, 503):
+                last_error = f"{model_name}: {response.status_code}"
                 continue
 
             if response.status_code != 200:
