@@ -27,6 +27,9 @@ class IRUploadResponse(BaseModel):
 
 class DeckScoreResponse(BaseModel):
     total_score: int = Field(ge=0, le=100)
+    max_score: int = Field(default=100, ge=0, le=100)
+    scoring_method: str = "weighted_average"
+    criteria_weights: dict[str, float] = Field(default_factory=dict)
     structure_summary: str
     strengths: list[str] = Field(default_factory=list)
     improvements: list[str] = Field(default_factory=list)
@@ -37,6 +40,12 @@ class CriteriaScoreResponse(BaseModel):
     pitchcoach_interpretation: str
     ir_guide: str
     score: int = Field(ge=0, le=100)
+    max_score: int = Field(default=100, ge=0, le=100)
+    raw_score: float | None = None
+    raw_max_score: float | None = None
+    coverage_status: str | None = None
+    evidence_slides: list[int] = Field(default_factory=list)
+    related_slides: list[int] = Field(default_factory=list)
     feedback: str
 
 

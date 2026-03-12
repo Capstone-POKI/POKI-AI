@@ -2,6 +2,15 @@ from typing import Dict
 from .schemas import DeckAnalysisResult, SpeechAnalysisResult
 
 
+def _normalize_pitch_type(pitch_situation: str) -> str:
+    text = (pitch_situation or "").strip().lower()
+    if "정부" in text:
+        return "government_support"
+    if "경진대회" in text or "contest" in text:
+        return "startup_contest"
+    return "general_ir"
+
+
 def build_analysis_context(deck_raw: Dict, speech_raw: Dict) -> Dict:
     """
     현서/예린 JSON(dict)을 요약한 context 생성
@@ -30,6 +39,7 @@ def build_analysis_context(deck_raw: Dict, speech_raw: Dict) -> Dict:
 
     context = {
         "pitch_situation": speech.발표_상황,
+        "pitch_type": _normalize_pitch_type(speech.발표_상황),
         "total_score": speech.상황_적합성_점수.총점,
         "evaluation_axes": evaluation_axes,
         "missing_sections": deck.diagnosis.missing_sections,

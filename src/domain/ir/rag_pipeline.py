@@ -5,21 +5,21 @@ from math import sqrt
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.infrastructure.embedding.client import EmbeddingClient
+from src.infrastructure.embedding.client import EmbeddingClient, GeminiEmbeddingClient
 from src.infrastructure.gemini.client import GeminiJSONClient
 
 
 DEFAULT_TOP_K = 3
 SIM_HIGH = 0.72
 SIM_MID = 0.60
-DEFAULT_LLM_SLIDE_LIMIT = 12
+DEFAULT_LLM_SLIDE_LIMIT = 50
 GROUP_CATEGORY_PRIORS = {
     "PROBLEM": {"PROBLEM", "MARKET"},
     "SOLUTION": {"SOLUTION", "PRODUCT"},
-    "MARKET_BM": {"MARKET", "BUSINESS_MODEL", "COMPETITION"},
+    "MARKET_BM": {"MARKET", "BUSINESS_MODEL", "COMPETITION", "GTM"},
     "TRACTION": {"TRACTION", "MARKET"},
     "TEAM": {"TEAM"},
-    "FINANCE": {"FINANCE", "BUSINESS_MODEL"},
+    "FINANCE": {"FINANCE", "BUSINESS_MODEL", "ASK"},
 }
 
 CATEGORY_KEYWORDS = {
@@ -155,12 +155,29 @@ CATEGORY_KEYWORDS = {
         "요청",
         "문의",
     ],
+    "GTM": [
+        "go-to-market",
+        "gtm",
+        "진입 전략",
+        "초기 시장",
+        "영업 전략",
+        "제휴",
+        "파트너십",
+        "partnership",
+        "가맹",
+        "제휴 완료",
+        "협업",
+        "확장 전략",
+        "초기 고객",
+        "채널",
+    ],
 }
 
 CATEGORY_PRIORITY = [
     "TRACTION",
     "FINANCE",
     "BUSINESS_MODEL",
+    "GTM",
     "MARKET",
     "TEAM",
     "COMPETITION",
@@ -171,6 +188,26 @@ CATEGORY_PRIORITY = [
     "COVER",
     "OTHER",
 ]
+
+VALID_SLIDE_MIN_TEXT_LEN = 24
+INVALID_SLIDE_DUPLICATE_SIM = 0.92
+INVALID_SLIDE_MIXED_SECTION_SIM = 0.88
+
+DISPLAY_CATEGORY_LABELS = {
+    "COVER": "표지/구성",
+    "PROBLEM": "문제정의",
+    "SOLUTION": "솔루션",
+    "PRODUCT": "제품/데모",
+    "MARKET": "시장분석",
+    "BUSINESS_MODEL": "비즈니스모델",
+    "TRACTION": "실적",
+    "COMPETITION": "경쟁분석",
+    "TEAM": "팀 소개",
+    "FINANCE": "재무/자금",
+    "ASK": "요청사항",
+    "GTM": "진입전략",
+    "OTHER": "기타",
+}
 
 _PIPELINE_CONFIG_CACHE: Optional[Dict[str, Any]] = None
 
@@ -253,27 +290,39 @@ def run_rag_ir_analysis(
     slides = _build_slides(docai_result)
     pitch_type = _resolve_pitch_type(strategy, pitch_type, slides)
     rubric = _load_rubric(pitch_type)
+    rubric = _apply_strategy_to_rubric(rubric, strategy)
     print(f"🧾 [RAG] 슬라이드 로드 완료: {len(slides)}장")
 
     print("🏷️ [RAG] 슬라이드 분류/요약 진행")
     _classify_and_summarize_slides(slides, gemini)
+    _mark_slide_validity(slides)
+    valid_slides = [slide for slide in slides if slide.get("is_valid", True)]
+    excluded_slides = [
+        {
+            "slide_number": slide["slide_number"],
+            "reason": slide.get("invalid_reason", ""),
+        }
+        for slide in slides
+        if not slide.get("is_valid", True)
+    ]
+    print(f"🧹 [RAG] 유효 슬라이드 {len(valid_slides)}장, 제외 {len(excluded_slides)}장")
 
     print("🔢 [RAG] 임베딩 생성 진행")
     embed_client = _init_embedding_client()
-    _embed_slides(slides, embed_client)
+    _embed_slides(valid_slides, embed_client)
     _embed_rubric_items(rubric, embed_client)
 
     print("📚 [RAG] 루브릭 매칭 및 기준별 점수 계산")
     criteria_scores = _score_criteria_with_rag(
-        slides=slides,
+        slides=valid_slides,
         rubric=rubric,
         gemini=gemini,
     )
 
     print("🧩 [RAG] 종합 점수/가이드 생성")
     deck_score = _build_deck_score(criteria_scores, rubric, strategy, gemini)
-    presentation_guide = _build_presentation_guide(slides, criteria_scores, strategy)
-    slide_cards = _build_slide_cards(slides, criteria_scores)
+    presentation_guide = _build_presentation_guide(valid_slides, criteria_scores, strategy, gemini)
+    slide_cards = _build_slide_cards(valid_slides, criteria_scores, gemini)
 
     final_output: Dict[str, Any] = {
         "analysis_version": analysis_version,
@@ -285,7 +334,9 @@ def run_rag_ir_analysis(
         "slides": slide_cards,
         "meta": {
             "filename": docai_result.get("metadata", {}).get("filename", "unknown"),
-            "total_slides": len(slides),
+            "total_slides": len(valid_slides),
+            "raw_total_slides": len(slides),
+            "excluded_slides": excluded_slides,
             "analysis_model": gemini.model_name if gemini.model else None,
             "embedding_model": "gemini-embedding-001",
         },
@@ -373,6 +424,9 @@ def _build_slides(docai_result: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "category": section_map.get(page_num, "OTHER").upper(),
                 "category_confidence": 0.5,
                 "text_deficiency_flag": len(page_text) < 20,
+                "ocr_noise_ratio": _estimate_ocr_noise_ratio(page_text),
+                "is_valid": True,
+                "invalid_reason": "",
                 "embedding": [],
             }
         )
@@ -391,8 +445,81 @@ def _extract_page_text(page: Dict[str, Any], full_text: str) -> str:
 
 
 def _clean_text(text: str) -> str:
-    text = re.sub(r"\s+", " ", text or "").strip()
+    text = text or ""
+    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", " ", text)
+    text = re.sub(r"\\+pm\^\{?\*?\}?\d*(?:\.\d+)?", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"([가-힣A-Za-z])([0-9])", r"\1 \2", text)
+    text = re.sub(r"([0-9])([가-힣A-Za-z])", r"\1 \2", text)
+    text = re.sub(r"[|]{2,}", " ", text)
+    text = re.sub(r"[_=~]{2,}", " ", text)
+    text = re.sub(r"\b[a-zA-Z]{1}\b", " ", text)
+    text = re.sub(r"(\d+)\s+(원|명|건|회|개|배|곳|년|월|일|%)\b", r"\1\2", text)
+    text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def _estimate_ocr_noise_ratio(text: str) -> float:
+    tokens = re.findall(r"\S+", text or "")
+    if not tokens:
+        return 1.0
+    noisy = 0
+    for token in tokens:
+        if len(token) <= 1:
+            noisy += 1
+            continue
+        if re.search(r"[\\^*_]{2,}", token):
+            noisy += 1
+            continue
+        if re.fullmatch(r"[\W_]+", token):
+            noisy += 1
+            continue
+    return noisy / max(1, len(tokens))
+
+
+def _split_meaningful_lines(text: str) -> List[str]:
+    raw = re.split(r"[\n\r•●■\-]+", text or "")
+    lines = []
+    for line in raw:
+        cleaned = _clean_text(line)
+        if len(cleaned) < 6:
+            continue
+        if cleaned in lines:
+            continue
+        lines.append(cleaned)
+    return lines
+
+
+def _summarize_slide_text(text: str, category: str) -> str:
+    lines = _split_meaningful_lines(text)
+    if not lines:
+        return "OCR 텍스트가 불안정해 핵심 메시지를 추출하기 어렵습니다."
+
+    title = lines[0]
+    evidence_lines = []
+    for line in lines[1:]:
+        has_number = bool(re.search(r"\d", line))
+        long_enough = len(line) >= 14
+        if has_number or long_enough:
+            evidence_lines.append(line)
+        if len(evidence_lines) == 2:
+            break
+
+    category_hint = {
+        "COMPETITION": "경쟁 비교 기준을 제시합니다.",
+        "BUSINESS_MODEL": "수익 구조와 과금 방식을 설명합니다.",
+        "GTM": "초기 진입 및 확장 전략을 설명합니다.",
+        "TRACTION": "실제 검증 지표 또는 고객 반응을 제시합니다.",
+        "MARKET": "시장 규모 또는 성장 근거를 설명합니다.",
+        "TEAM": "핵심 팀 구성과 역할을 설명합니다.",
+    }.get(category)
+
+    parts = [title]
+    if evidence_lines:
+        parts.append(" / ".join(evidence_lines))
+    elif category_hint:
+        parts.append(category_hint)
+    summary = " ".join(parts)
+    return summary[:280]
 
 
 def _classify_and_summarize_slides(slides: List[Dict[str, Any]], gemini: GeminiJSONClient) -> None:
@@ -413,12 +540,36 @@ def _classify_and_summarize_slides(slides: List[Dict[str, Any]], gemini: GeminiJ
         if gemini.model and idx <= use_llm_count:
             try:
                 prompt = (
-                    "다음 IR 슬라이드를 분석해서 JSON만 반환하세요.\n"
-                    "category는 COVER|PROBLEM|SOLUTION|PRODUCT|MARKET|BUSINESS_MODEL|TRACTION|"
-                    "COMPETITION|TEAM|FINANCE|ASK|OTHER 중 하나.\n"
-                    "출력: {\"category\":\"...\",\"category_confidence\":0.0~1.0,"
-                    "\"short_summary\":\"...\",\"key_claims\":[\"...\", \"...\"]}\n\n"
-                    f"[슬라이드 텍스트]\n{slide['clean_text'][:4000]}"
+                    "다음 IR 피치덱 슬라이드의 OCR 텍스트를 분석하여 JSON만 반환하세요.\n\n"
+                    "## 분류 규칙\n"
+                    "category는 다음 중 하나를 선택하세요:\n"
+                    "- COVER: 표지, 마지막 감사 슬라이드, 목차\n"
+                    "- PROBLEM: 고객 문제, pain point, 현황 분석\n"
+                    "- SOLUTION: 해결책, 핵심 기능, 서비스 설명\n"
+                    "- PRODUCT: 제품 데모, UI/UX, 화면 설명, 기술 아키텍처\n"
+                    "- MARKET: TAM/SAM/SOM, 시장 규모, 성장률, 시장 트렌드\n"
+                    "- BUSINESS_MODEL: 수익 모델, 가격 정책, BM 구조\n"
+                    "- TRACTION: 실적, 매출, 사용자 지표, PoC 결과, 고객사\n"
+                    "- COMPETITION: 경쟁사 비교표, 차별점, 포지셔닝\n"
+                    "- TEAM: 팀 구성, 멤버 경력, 조직도\n"
+                    "- FINANCE: 재무 계획, 투자 요청, 자금 사용 계획\n"
+                    "- ASK: 로드맵, 마일스톤, 향후 계획, 투자 요청\n"
+                    "- GTM: 시장 진입 전략, 초기 고객 확보, 영업 전략, 제휴 전략\n"
+                    "- OTHER: 위 어디에도 해당하지 않는 경우\n\n"
+                    "## 주의사항\n"
+                    "- 경쟁사 비교표가 있으면 COMPETITION (TEAM 아님)\n"
+                    "- 'Business Model'이 제목에 있으면 BUSINESS_MODEL (TRACTION 아님)\n"
+                    "- 시장 진입/영업/제휴 전략은 GTM (MARKET 아님)\n"
+                    "- OCR 노이즈(깨진 글자, 잘못된 띄어쓰기)는 무시하고 의미를 파악하세요\n\n"
+                    "## short_summary 작성 규칙\n"
+                    "- OCR 원문을 그대로 복사하지 마세요\n"
+                    "- 슬라이드의 핵심 메시지를 1~2문장으로 재작성하세요\n"
+                    "- 브랜드명, 수치는 정확히 유지하세요\n\n"
+                    "## 출력 형식\n"
+                    "{\"category\":\"...\",\"category_confidence\":0.0~1.0,"
+                    "\"short_summary\":\"핵심 메시지 1~2문장\","
+                    "\"key_claims\":[\"주장1\", \"주장2\"]}\n\n"
+                    f"[슬라이드 {idx}/{len(slides)} OCR 텍스트]\n{slide['clean_text'][:4000]}"
                 )
                 out = gemini.generate_json(prompt, temperature=0.1)
                 category = str(out.get("category", "OTHER")).upper()
@@ -434,17 +585,20 @@ def _classify_and_summarize_slides(slides: List[Dict[str, Any]], gemini: GeminiJ
                     "TEAM",
                     "FINANCE",
                     "ASK",
+                    "GTM",
                     "OTHER",
                 }:
                     category = "OTHER"
                 slide["category"] = category
                 slide["category_confidence"] = _clamp01(float(out.get("category_confidence", 0.7)))
-                slide["short_summary"] = str(out.get("short_summary", ""))[:280] or slide["clean_text"][:180]
+                raw_summary = str(out.get("short_summary", "")).strip()
+                slide["short_summary"] = _sanitize_summary(raw_summary) or _summarize_slide_text(slide["clean_text"], category)
                 claims = out.get("key_claims", [])
                 if isinstance(claims, list):
-                    slide["key_claims"] = [str(c).strip() for c in claims if str(c).strip()][:5]
+                    slide["key_claims"] = [_sanitize_claim(str(c)) for c in claims if _sanitize_claim(str(c))][:5]
                 else:
                     slide["key_claims"] = []
+                _postprocess_slide_category(slide)
                 continue
             except Exception:
                 pass
@@ -457,8 +611,123 @@ def _classify_and_summarize_slides(slides: List[Dict[str, Any]], gemini: GeminiJ
         )
         slide["category"] = category
         slide["category_confidence"] = conf
-        slide["short_summary"] = slide["clean_text"][:180]
+        slide["short_summary"] = _summarize_slide_text(slide["clean_text"], category)
         slide["key_claims"] = _extract_claims(slide["clean_text"])
+        _postprocess_slide_category(slide)
+
+
+def _sanitize_summary(text: str) -> str:
+    cleaned = _clean_text(text)
+    cleaned = re.sub(r"(원시민|위시민|워시편|셀 프 세차)", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) < 12:
+        return ""
+    return cleaned[:280]
+
+
+def _sanitize_claim(text: str) -> str:
+    cleaned = _clean_text(text)
+    if len(cleaned) < 8:
+        return ""
+    return cleaned[:120]
+
+
+def _postprocess_slide_category(slide: Dict[str, Any]) -> None:
+    text = (slide.get("clean_text", "") or "").lower()
+    summary = (slide.get("short_summary", "") or "").lower()
+    merged = f"{text} {summary}"
+
+    # 슬라이드 제목 추출 (첫 줄 또는 첫 50자)
+    first_line = (text.split("\n")[0] if "\n" in text else text[:80]).strip()
+
+    # 1. 경쟁분석 - 최우선 (competitive, 비교표 등 명확한 시그널)
+    competition_signals = ["competitive", "경쟁사", "경쟁 분석", "비교표", "vs ", "포지셔닝", "moat"]
+    if any(k in merged for k in competition_signals):
+        # 비교 대상이 2개 이상이면 거의 확실한 경쟁분석
+        competitor_count = sum(1 for k in ["불가", "가능", "○", "×", "✓", "✗"] if k in text)
+        if competitor_count >= 2 or any(k in first_line for k in ["competitive", "경쟁"]):
+            slide["category"] = "COMPETITION"
+            slide["category_confidence"] = max(float(slide.get("category_confidence", 0.0)), 0.88)
+            return
+
+    # 2. 실적/트랙션 - PoC, 고객 만족도, 실매출 등 검증 지표
+    traction_signals = ["poc", "고객 만족", "추천 의사", "시장 검증", "실매출", "mrr", "arr",
+                        "mau", "dau", "런칭", "베타", "파일럿", "재계약", "누적", "성장률",
+                        "전월 대비", "객단가", "사용량 증가"]
+    traction_title_signals = ["poc", "traction", "실적", "성과", "검증"]
+    if any(k in first_line for k in traction_title_signals) or sum(1 for k in traction_signals if k in merged) >= 2:
+        slide["category"] = "TRACTION"
+        slide["category_confidence"] = max(float(slide.get("category_confidence", 0.0)), 0.85)
+        return
+
+    # 3. 시장 - TAM/SAM/SOM, 시장 규모 데이터가 핵심
+    market_signals = ["tam", "sam", "som", "시장규모", "시장 규모", "cagr", "시장 성장"]
+    market_title_signals = ["market", "시장"]
+    if any(k in first_line for k in market_title_signals) or sum(1 for k in market_signals if k in merged) >= 2:
+        slide["category"] = "MARKET"
+        slide["category_confidence"] = max(float(slide.get("category_confidence", 0.0)), 0.85)
+        return
+
+    # 4. 비즈니스 모델
+    if any(k in merged for k in ["business model", "비즈니스 모델", "수수료", "구독", "pricing", "수익 모델", "과금"]):
+        if any(k in first_line for k in ["business model", "비즈니스", "bm", "수익"]):
+            slide["category"] = "BUSINESS_MODEL"
+            slide["category_confidence"] = max(float(slide.get("category_confidence", 0.0)), 0.85)
+            return
+
+    # 5. GTM / 사업 전략
+    if any(k in merged for k in ["go-to-market", "gtm", "영업 전략", "초기 고객", "제휴", "파트너십", "진입 전략", "확장 전략"]):
+        slide["category"] = "GTM"
+        slide["category_confidence"] = max(float(slide.get("category_confidence", 0.0)), 0.8)
+        return
+
+    # 6. 자금 계획
+    if any(k in merged for k in ["투자금", "자금 사용", "use of proceeds", "runway", "bep", "손익", "투자 유치"]):
+        if any(k in first_line for k in ["investment", "투자", "자금", "ask"]):
+            slide["category"] = "FINANCE"
+            slide["category_confidence"] = max(float(slide.get("category_confidence", 0.0)), 0.82)
+            return
+
+
+def _mark_slide_validity(slides: List[Dict[str, Any]]) -> None:
+    previous_valid_text = ""
+    for index, slide in enumerate(slides):
+        text = slide.get("clean_text", "") or ""
+        token_count = len(re.findall(r"[a-zA-Z0-9가-힣]+", text))
+        noise_ratio = float(slide.get("ocr_noise_ratio", 0.0))
+
+        if token_count < VALID_SLIDE_MIN_TEXT_LEN and noise_ratio >= 0.22:
+            slide["is_valid"] = False
+            slide["invalid_reason"] = "OCR 텍스트가 너무 적고 노이즈 비율이 높습니다."
+            continue
+
+        heading_hits = sum(
+            1
+            for keyword in ["problem", "solution", "team", "market", "traction", "business model", "finance"]
+            if keyword in text.lower()
+        )
+        if heading_hits >= 3:
+            slide["is_valid"] = False
+            slide["invalid_reason"] = "여러 슬라이드 요소가 합쳐진 혼합 페이지로 판단됩니다."
+            continue
+
+        if previous_valid_text:
+            sim_prev = _lexical_similarity(text, previous_valid_text)
+            if sim_prev >= INVALID_SLIDE_DUPLICATE_SIM:
+                slide["is_valid"] = False
+                slide["invalid_reason"] = "이전 슬라이드와 내용이 거의 동일한 중복 페이지입니다."
+                continue
+            if sim_prev >= INVALID_SLIDE_MIXED_SECTION_SIM and any(k in text.lower() for k in ["problem", "solution", "team", "market"]):
+                slide["is_valid"] = False
+                slide["invalid_reason"] = "여러 슬라이드 요소가 합쳐진 혼합 페이지로 판단됩니다."
+                continue
+
+        if slide.get("category") == "OTHER" and token_count < 40 and noise_ratio > 0.3:
+            slide["is_valid"] = False
+            slide["invalid_reason"] = "의미 있는 텍스트가 부족해 분석 신뢰도가 낮습니다."
+            continue
+
+        previous_valid_text = text
 
 
 def _keyword_classify(text: str) -> str:
@@ -484,6 +753,10 @@ def _keyword_classify_with_confidence(
     has_solution_core = any(k in t for k in ["해결", "솔루션", "개선", "제안", "대안", "효과", "as-is", "to-be"])
     has_team_core = any(k in t for k in ["ceo", "cto", "coo", "cmo", "founder", "팀", "멤버", "프로필", "경력", "학력"])
     has_cover_core = any(k in t for k in ["thank", "thanks", "q&a", "감사", "문의", "logo", "chapter", "section", "part", "overview", "agenda"])
+    has_competition_core = any(k in t for k in ["경쟁", "경쟁사", "비교", "포지셔닝", "moat"])
+    has_bm_core = any(k in t for k in ["business model", "비즈니스 모델", "수익", "수수료", "구독", "pricing"])
+    has_gtm_core = any(k in t for k in ["go-to-market", "gtm", "초기 고객", "영업 전략", "제휴", "파트너십", "진입 전략", "확장 전략"])
+    has_finance_core = any(k in t for k in ["투자", "투자금", "자금 사용", "손익", "bep", "runway", "재무"])
 
     # Cover/title slide heuristic
     if total_slides > 0:
@@ -495,7 +768,17 @@ def _keyword_classify_with_confidence(
         return "COVER", 0.78
     if has_cover_core and token_count <= 20 and line_count <= 4 and num_cnt == 0:
         return "COVER", 0.70
-    if token_count <= 10 and num_cnt == 0 and not (has_market_core or has_traction_core or has_product_core or has_solution_core or has_team_core):
+    if token_count <= 10 and num_cnt == 0 and not (
+        has_market_core
+        or has_traction_core
+        or has_product_core
+        or has_solution_core
+        or has_team_core
+        or has_competition_core
+        or has_bm_core
+        or has_gtm_core
+        or has_finance_core
+    ):
         return "COVER", 0.66
     if total_slides > 0 and slide_number <= 2 and has_team_core:
         return "TEAM", 0.70
@@ -520,6 +803,9 @@ def _keyword_classify_with_confidence(
     if has_traction_core:
         scores["TRACTION"] += 1.2
         scores["PROBLEM"] -= 0.3
+        if has_bm_core:
+            scores["BUSINESS_MODEL"] += 0.8
+            scores["TRACTION"] -= 0.4
     if has_product_core:
         scores["PRODUCT"] += 1.2
         if has_plan_core:
@@ -533,11 +819,32 @@ def _keyword_classify_with_confidence(
         scores["TEAM"] += 1.4
         scores["TRACTION"] -= 0.4
         scores["SOLUTION"] -= 0.3
+    if has_competition_core:
+        scores["COMPETITION"] += 1.8
+        scores["TEAM"] -= 0.7
+    if has_bm_core:
+        scores["BUSINESS_MODEL"] += 1.5
+        scores["TRACTION"] -= 0.5
+        scores["FINANCE"] -= 0.2
+    if has_gtm_core:
+        scores["GTM"] += 1.7
+        scores["MARKET"] -= 0.4
+        scores["ASK"] -= 0.2
+    if has_finance_core:
+        scores["FINANCE"] += 1.5
+        scores["ASK"] += 0.5
 
     # Prefer solution for problem->solution storytelling slides.
     if has_solution_core and any(k in t for k in ["문제", "pain", "불편", "한계", "차별"]):
         scores["SOLUTION"] += 0.6
         scores["PROBLEM"] += 0.3
+
+    if has_team_core and has_competition_core:
+        scores["COMPETITION"] += 0.6
+        scores["TEAM"] -= 0.8
+    if has_gtm_core and has_market_core:
+        scores["GTM"] += 0.4
+        scores["MARKET"] -= 0.2
 
     best_score = max(scores.values()) if scores else 0.0
     if best_score < 1.0:
@@ -553,22 +860,38 @@ def _keyword_classify_with_confidence(
 
 def _extract_claims(text: str) -> List[str]:
     chunks = re.split(r"[.!?\n]", text)
-    claims = [c.strip() for c in chunks if len(c.strip()) >= 15]
+    claims = [_sanitize_claim(c.strip()) for c in chunks if len(c.strip()) >= 15]
+    claims = [c for c in claims if c]
     return claims[:5]
 
 
-def _init_embedding_client() -> Optional[EmbeddingClient]:
-    if os.getenv("ENABLE_VERTEX_EMBEDDING") != "1":
-        return None
-    try:
-        project_id = os.getenv("PROJECT_ID")
-        if not project_id:
-            return None
-        client = EmbeddingClient(model_name="gemini-embedding-001")
-        client.init_vertex(project_id=project_id, location=os.getenv("LOCATION", "us-central1"))
-        return client
-    except Exception:
-        return None
+def _init_embedding_client() -> Optional[GeminiEmbeddingClient]:
+    # Prefer Gemini REST embedding (no Vertex AI dependency)
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if api_key:
+        try:
+            client = GeminiEmbeddingClient(model_name="gemini-embedding-001")
+            # Quick validation
+            test = client.embed(["test"], task_type="RETRIEVAL_DOCUMENT")
+            if test and len(test[0]) > 100:
+                print("   - Gemini Embedding API 연결 성공")
+                return client
+        except Exception as e:
+            print(f"   - Gemini Embedding API 실패: {e}")
+
+    # Fallback: Vertex AI
+    if os.getenv("ENABLE_VERTEX_EMBEDDING") == "1":
+        try:
+            project_id = os.getenv("PROJECT_ID")
+            if project_id:
+                vertex_client = EmbeddingClient(model_name="gemini-embedding-001")
+                vertex_client.init_vertex(project_id=project_id, location=os.getenv("LOCATION", "us-central1"))
+                return vertex_client
+        except Exception:
+            pass
+
+    print("   - ⚠️ 임베딩 클라이언트 없음 → 폴백 임베딩 사용")
+    return None
 
 
 def _embed_slides(slides: List[Dict[str, Any]], embed_client: Optional[EmbeddingClient]) -> None:
@@ -656,6 +979,81 @@ def _default_rubric(pitch_type: str) -> Dict[str, Any]:
     return {"pitch_type": pitch_type, "total_points": 100, "groups": common}
 
 
+def _apply_strategy_to_rubric(
+    rubric: Dict[str, Any],
+    strategy: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not strategy:
+        return rubric
+
+    criteria = strategy.get("evaluation_criteria", [])
+    if not isinstance(criteria, list) or not criteria:
+        return rubric
+
+    points_by_group: Dict[str, float] = {}
+    for item in criteria:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("criteria_name", "")).strip()
+        points = item.get("points")
+        if not name or not isinstance(points, (int, float)):
+            continue
+        mapped = _map_strategy_criterion_to_group(name)
+        if mapped:
+            points_by_group[mapped] = float(points)
+
+    total_points = sum(points_by_group.values())
+    if total_points <= 0:
+        return rubric
+
+    updated_groups = []
+    for group in rubric.get("groups", []):
+        gid = str(group.get("group_id", ""))
+        if gid in points_by_group:
+            updated = dict(group)
+            max_score = float(points_by_group[gid])
+            updated["max_score"] = max_score
+            updated["group_weight"] = max_score / total_points
+            items = []
+            raw_items = group.get("items", []) or []
+            if raw_items:
+                item_portion = max_score / max(1, len(raw_items))
+                for idx, item in enumerate(raw_items):
+                    new_item = dict(item)
+                    if idx == len(raw_items) - 1:
+                        assigned = round(max_score - item_portion * (len(raw_items) - 1), 2)
+                    else:
+                        assigned = round(item_portion, 2)
+                    new_item["max_score"] = assigned
+                    items.append(new_item)
+            updated["items"] = items or raw_items
+            updated_groups.append(updated)
+        else:
+            updated_groups.append(group)
+
+    updated_rubric = dict(rubric)
+    updated_rubric["groups"] = updated_groups
+    updated_rubric["total_points"] = total_points
+    return updated_rubric
+
+
+def _map_strategy_criterion_to_group(name: str) -> Optional[str]:
+    normalized = name.replace(" ", "").lower()
+    mapping = {
+        "문제정의": "PROBLEM",
+        "솔루션": "SOLUTION",
+        "시장/비즈니스": "MARKET_BM",
+        "시장비즈니스": "MARKET_BM",
+        "시장": "MARKET_BM",
+        "비즈니스": "MARKET_BM",
+        "실적": "TRACTION",
+        "팀": "TEAM",
+        "자금계획": "FINANCE",
+        "자금": "FINANCE",
+    }
+    return mapping.get(normalized)
+
+
 def _embed_rubric_items(rubric: Dict[str, Any], embed_client: Optional[EmbeddingClient]) -> None:
     items = []
     refs: List[Dict[str, Any]] = []
@@ -669,12 +1067,12 @@ def _embed_rubric_items(rubric: Dict[str, Any], embed_client: Optional[Embedding
         item["embedding"] = vec
 
 
-def _embed_texts(texts: List[str], embed_client: Optional[EmbeddingClient]) -> List[List[float]]:
+def _embed_texts(texts: List[str], embed_client) -> List[List[float]]:
     if embed_client is not None:
         try:
             return embed_client.embed(texts, task_type="RETRIEVAL_DOCUMENT")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"   - 임베딩 API 호출 실패: {e}")
     return [_fallback_embed(t) for t in texts]
 
 
@@ -694,6 +1092,7 @@ def _score_criteria_with_rag(
     gemini: GeminiJSONClient,
 ) -> List[Dict[str, Any]]:
     criteria_scores: List[Dict[str, Any]] = []
+    slide_usage_counter: Dict[int, int] = {}
 
     for group in rubric.get("groups", []):
         group_items = group.get("items", [])
@@ -711,6 +1110,7 @@ def _score_criteria_with_rag(
                 slides,
                 top_k=_top_k(),
                 group_id=str(group.get("group_id", "")),
+                slide_usage_counter=slide_usage_counter,
             )
             max_sim = evidences[0]["similarity"] if evidences else 0.0
             coverage = _decide_coverage(item, evidences, gemini)
@@ -724,6 +1124,9 @@ def _score_criteria_with_rag(
             if coverage in {"COVERED", "PARTIALLY_COVERED"} and evidences:
                 all_related.append(int(evidences[0]["slide_number"]))
                 all_related.extend([e["slide_number"] for e in evidences[1:] if e["similarity"] >= (_sim_mid() - 0.1)])
+                for evidence in evidences[:2]:
+                    sn = int(evidence["slide_number"])
+                    slide_usage_counter[sn] = slide_usage_counter.get(sn, 0) + 1
             evidence_for_group.append(
                 {
                     "item_id": item.get("item_id"),
@@ -754,12 +1157,20 @@ def _score_criteria_with_rag(
             related_unique = sorted(set(fallback_related))
         group_coverage = _reduce_group_coverage(coverage_values, coverage_weights)
         score_100 = int(round((raw_group_score / raw_group_max) * 100)) if raw_group_max > 0 else 0
+        score_100, related_unique, feedback_boost = _apply_group_score_floor(
+            group_id=str(group.get("group_id", "")),
+            score_100=score_100,
+            slides=slides,
+            related_slides=related_unique,
+        )
         feedback, confidence = _build_group_feedback(
             group=group,
             evidence_for_group=evidence_for_group,
             missing_items=missing_items,
             gemini=gemini,
         )
+        if feedback_boost:
+            feedback = f"{feedback} {feedback_boost}".strip()
 
         criteria_scores.append(
             {
@@ -817,6 +1228,7 @@ def _retrieve_top_k(
     slides: List[Dict[str, Any]],
     top_k: int,
     group_id: str = "",
+    slide_usage_counter: Optional[Dict[int, int]] = None,
 ) -> List[Dict[str, Any]]:
     item_vec = item.get("embedding", [])
     item_text = f"{item.get('item_name', '')} {item.get('description', '')}".strip()
@@ -844,6 +1256,10 @@ def _retrieve_top_k(
                 sim = min(1.0, sim + 0.06)
             elif digit_cnt >= 3:
                 sim = min(1.0, sim + 0.03)
+        if slide_usage_counter:
+            reuse_count = int(slide_usage_counter.get(int(slide["slide_number"]), 0))
+            if reuse_count > 0:
+                sim = max(0.0, sim - min(0.18, reuse_count * 0.07))
         if sim < min_retrieval_sim:
             continue
         scored.append(
@@ -1051,8 +1467,8 @@ def _build_group_feedback(
     if os.getenv("IR_FAST_MODE") == "1":
         if missing_items:
             return (
-                f"{group.get('group_name')} 항목에서 누락 요소가 감지되었습니다. "
-                f"누락: {', '.join(m['item_name'] for m in missing_items[:2])}",
+                f"{group.get('group_name')} 항목은 일부 근거가 확인되지만 "
+                f"{', '.join(m['item_name'] for m in missing_items[:2])} 보강이 필요합니다.",
                 0.68,
             )
         return f"{group.get('group_name')} 항목은 주요 근거가 확인되었습니다.", 0.74
@@ -1077,15 +1493,28 @@ def _build_group_feedback(
 
     if missing_items:
         top_ev = [ev for ev in evidence_for_group if ev.get("top_summary")]
-        ev_hint = f" 근거 예시: {top_ev[0]['top_summary'][:70]}..." if top_ev else ""
+        ev_summary = _compress_evidence_summary(top_ev[0]["top_summary"]) if top_ev else ""
+        ev_hint = f" 근거 예시: {ev_summary}" if ev_summary else ""
         return (
-            f"{group.get('group_name')} 항목에서 일부 필수 근거가 부족합니다. "
-            f"누락: {', '.join(m['item_name'] for m in missing_items[:2])}.{ev_hint}",
+            f"{group.get('group_name')} 항목은 관련 슬라이드가 일부 확인되지만 "
+            f"{', '.join(m['item_name'] for m in missing_items[:2])} 근거가 더 필요합니다.{ev_hint}",
             0.65,
         )
     top_ev = [ev for ev in evidence_for_group if ev.get("top_summary")]
-    ev_hint = f" 주요 근거: {top_ev[0]['top_summary'][:80]}..." if top_ev else ""
+    ev_summary = _compress_evidence_summary(top_ev[0]["top_summary"]) if top_ev else ""
+    ev_hint = f" 주요 근거: {ev_summary}" if ev_summary else ""
     return f"{group.get('group_name')} 항목은 근거 슬라이드가 확인되어 비교적 안정적으로 커버되었습니다.{ev_hint}", 0.72
+
+
+def _compress_evidence_summary(text: str) -> str:
+    summary = _sanitize_summary(text or "")
+    if not summary:
+        return ""
+    tokens = summary.split()
+    keyword_heavy = len([t for t in tokens if re.search(r"[A-Za-z가-힣0-9]", t)]) >= 4
+    if not keyword_heavy:
+        return ""
+    return summary[:150] + ("..." if len(summary) > 150 else "")
 
 
 def _build_deck_score(
@@ -1103,24 +1532,183 @@ def _build_deck_score(
     total_score = int(round(weighted_sum * 100))
 
     sorted_low = sorted(criteria_scores, key=lambda x: x.get("score", 0))
-    improvements = [f"{c['criteria_name']} 보강: {c['feedback']}" for c in sorted_low[:3]]
-    strengths = [f"{c['criteria_name']} 강점: {c['feedback']}" for c in sorted(criteria_scores, key=lambda x: x.get("score", 0), reverse=True)[:3]]
-    top_actions = []
-    for c in sorted_low[:3]:
-        missing = c.get("missing_items", [])
-        if missing:
-            top_actions.append(f"{c['criteria_name']}: {missing[0].get('suggestion', '')}")
-        else:
-            top_actions.append(f"{c['criteria_name']}: 핵심 근거 슬라이드 수치를 강화하세요.")
+    sorted_high = sorted(criteria_scores, key=lambda x: x.get("score", 0), reverse=True)
+    strengths, improvements, top_actions = _build_deck_strengths_improvements_llm(
+        criteria_scores, total_score, strategy, gemini
+    )
+    if not strengths:
+        strengths = _build_deck_strengths(sorted_high)
+    if not improvements:
+        improvements = _build_deck_improvements(sorted_low)
+    if not top_actions:
+        top_actions = []
+        for c in sorted_low[:3]:
+            missing = c.get("missing_items", [])
+            if missing:
+                top_actions.append(f"{c['criteria_name']}: {missing[0].get('suggestion', '')}")
+            else:
+                top_actions.append(f"{c['criteria_name']}: 핵심 근거 슬라이드 수치를 강화하세요.")
 
     structure_summary = _build_structure_summary(criteria_scores, strategy, gemini)
     return {
         "total_score": max(0, min(100, total_score)),
+        "max_score": 100,
+        "scoring_method": "weighted_average",
+        "criteria_weights": {
+            str(g.get("group_name", "")): float(g.get("group_weight", 0.0))
+            for g in rubric.get("groups", [])
+            if str(g.get("group_name", "")).strip()
+        },
         "structure_summary": structure_summary,
         "strengths": strengths,
         "improvements": improvements,
         "top_actions": top_actions,
     }
+
+
+def _apply_group_score_floor(
+    group_id: str,
+    score_100: int,
+    slides: List[Dict[str, Any]],
+    related_slides: List[int],
+) -> Tuple[int, List[int], str]:
+    floor_rules = {
+        "TEAM": {"categories": {"TEAM"}, "floor": 15, "message": "팀 슬라이드는 존재하지만 역할 적합성과 실행 성과 설명은 더 보강할 필요가 있습니다."},
+        "FINANCE": {"categories": {"FINANCE", "ASK", "BUSINESS_MODEL"}, "floor": 15, "message": "자금 또는 실행 계획 슬라이드는 있으나 예산 배분과 마일스톤 연결이 더 필요합니다."},
+    }
+    rule = floor_rules.get(group_id)
+    if not rule or score_100 >= rule["floor"]:
+        return score_100, related_slides, ""
+
+    candidate_slides = [
+        int(slide["slide_number"])
+        for slide in slides
+        if slide.get("category") in rule["categories"]
+    ]
+    if not candidate_slides:
+        return score_100, related_slides, ""
+
+    merged = sorted(set((related_slides or []) + candidate_slides[:2]))
+    return rule["floor"], merged, rule["message"]
+
+
+def _build_deck_strengths_improvements_llm(
+    criteria_scores: List[Dict[str, Any]],
+    total_score: int,
+    strategy: Optional[Dict[str, Any]],
+    gemini: GeminiJSONClient,
+) -> Tuple[List[str], List[str], List[str]]:
+    """LLM 기반으로 덱 전체의 강점/개선점/핵심 액션을 생성."""
+    if not gemini or not getattr(gemini, "model", None):
+        return [], [], []
+    try:
+        criteria_info = [
+            {
+                "name": c["criteria_name"],
+                "score": c["score"],
+                "coverage": c.get("coverage_status"),
+                "feedback": (c.get("feedback", "") or "")[:150],
+                "related_slides": c.get("related_slides", []),
+                "missing": [m.get("item_name", "") for m in c.get("missing_items", [])],
+            }
+            for c in criteria_scores
+        ]
+        prompt = json.dumps({
+            "instruction": (
+                "IR 피치덱 분석 결과를 바탕으로 강점/개선점/핵심 액션을 작성하세요. JSON만 반환.\n\n"
+                "## 규칙\n"
+                "- strengths: 이 덱이 투자자에게 매력적인 이유 2~3개. 구체적 내용 언급 필수.\n"
+                "- improvements: 덱의 설득력을 높이기 위해 반드시 보완해야 할 점 2~3개. 구체적이고 실행 가능한 조언.\n"
+                "- top_actions: 즉시 실행할 수 있는 개선 액션 2~3개 (1문장씩, '~하세요' 형태).\n"
+                "- 모든 내용은 실제 분석 데이터에 기반해야 하며, 일반적인 조언은 금지.\n"
+                "- 슬라이드 번호를 포함하여 구체성을 높이세요."
+            ),
+            "total_score": total_score,
+            "pitch_type": (strategy or {}).get("type", "VC_DEMO"),
+            "criteria": criteria_info,
+            "output_format": {
+                "strengths": ["강점1", "강점2"],
+                "improvements": ["개선점1", "개선점2"],
+                "top_actions": ["액션1", "액션2"],
+            },
+        }, ensure_ascii=False)
+        out = gemini.generate_json(prompt, temperature=0.2)
+        strengths = [str(s).strip() for s in out.get("strengths", []) if str(s).strip()][:3]
+        improvements = [str(s).strip() for s in out.get("improvements", []) if str(s).strip()][:3]
+        top_actions = [str(s).strip() for s in out.get("top_actions", []) if str(s).strip()][:3]
+        if strengths and improvements:
+            return strengths, improvements, top_actions
+    except Exception:
+        pass
+    return [], [], []
+
+
+def _build_deck_strengths(criteria_scores: List[Dict[str, Any]]) -> List[str]:
+    strengths: List[str] = []
+    for criterion in criteria_scores:
+        if int(criterion.get("score", 0)) < 55:
+            continue
+        message = _criterion_strength_message(criterion)
+        if message:
+            strengths.append(message)
+        if len(strengths) == 3:
+            break
+    if not strengths and criteria_scores:
+        fallback = max(criteria_scores, key=lambda x: int(x.get("score", 0)))
+        strengths.append(
+            f"{fallback.get('criteria_name', '핵심 항목')} 관련 슬라이드가 확인되어 기본 발표 흐름은 갖춰져 있습니다."
+        )
+    return strengths[:3]
+
+
+def _build_deck_improvements(criteria_scores: List[Dict[str, Any]]) -> List[str]:
+    improvements: List[str] = []
+    for criterion in criteria_scores:
+        message = _criterion_improvement_message(criterion)
+        if message:
+            improvements.append(message)
+        if len(improvements) == 3:
+            break
+    if not improvements and criteria_scores:
+        improvements.append("낮은 점수 항목의 정량 근거와 비교 기준을 보강해 전체 설득력을 높이세요.")
+    return improvements[:3]
+
+
+def _criterion_strength_message(criterion: Dict[str, Any]) -> str:
+    name = str(criterion.get("criteria_name", "")).strip()
+    related = criterion.get("related_slides", []) or []
+    score = int(criterion.get("score", 0))
+    if not name:
+        return ""
+
+    templates = {
+        "문제정의": "문제와 고객 맥락을 다루는 슬라이드가 포함되어 발표 도입 흐름이 잡혀 있습니다.",
+        "솔루션": "해결 방향을 설명하는 슬라이드가 확보되어 문제-해결 연결 구조는 보입니다.",
+        "시장/비즈니스": "시장 또는 수익화 관점의 슬라이드가 포함되어 사업화 그림은 제시되고 있습니다.",
+        "실적": "실제 검증이나 고객 반응을 시사하는 슬라이드가 있어 실행 흔적이 보입니다.",
+        "팀": "팀 또는 역할 소개 슬라이드가 있어 실행 주체를 설명할 기반은 있습니다.",
+        "자금 계획": "자금 계획이나 실행 일정 관련 슬라이드가 있어 후속 계획을 연결할 수 있습니다.",
+    }
+    base = templates.get(name)
+    if base:
+        if related:
+            return f"{base} 근거 슬라이드: {', '.join(str(x) for x in related[:2])}번."
+        return base
+    if score >= 70:
+        return f"{name} 항목은 관련 근거 슬라이드가 확인되어 기본 설득력이 확보되었습니다."
+    return ""
+
+
+def _criterion_improvement_message(criterion: Dict[str, Any]) -> str:
+    name = str(criterion.get("criteria_name", "")).strip()
+    missing = criterion.get("missing_items", []) or []
+    if missing:
+        first = missing[0]
+        return f"{name} 보강: {str(first.get('suggestion', '')).strip()}"
+    feedback = str(criterion.get("feedback", "")).strip()
+    if int(criterion.get("score", 0)) < 60 and feedback:
+        return f"{name} 보강: {feedback}"
+    return ""
 
 
 def _build_structure_summary(
@@ -1151,6 +1739,7 @@ def _build_presentation_guide(
     slides: List[Dict[str, Any]],
     criteria_scores: List[Dict[str, Any]],
     strategy: Optional[Dict[str, Any]],
+    gemini: Optional[Any] = None,
 ) -> Dict[str, Any]:
     low_criteria = sorted(criteria_scores, key=lambda x: x.get("score", 0))[:2]
     emphasized = []
@@ -1170,29 +1759,184 @@ def _build_presentation_guide(
         emphasized = [{"slide_number": 1, "reason": "오프닝 메시지를 명확히 제시하세요."}]
 
     pitch_hint = str((strategy or {}).get("type", "VC_DEMO"))
-    return {
-        "emphasized_slides": emphasized,
-        "guide": [
+    total_slides = len(slides)
+
+    # LLM 기반 가이드 생성 시도
+    guide = None
+    time_allocation = None
+    if gemini and getattr(gemini, "model", None) and os.getenv("IR_FAST_MODE") != "1":
+        try:
+            slide_overview = [
+                {"num": s["slide_number"], "cat": s.get("category", "OTHER"), "summary": (s.get("short_summary", "") or "")[:60]}
+                for s in slides
+            ]
+            scores_overview = [
+                {"name": c["criteria_name"], "score": c["score"]}
+                for c in criteria_scores
+            ]
+            prompt = json.dumps({
+                "instruction": (
+                    "IR 피치덱 발표 가이드를 작성하세요. JSON만 반환.\n"
+                    "guide: 발표 전략 조언 3~5개 (슬라이드 구성에 맞춤, 구체적으로)\n"
+                    "time_allocation: 발표 시간 배분 (오프닝/본론 세부/클로징)"
+                ),
+                "pitch_type": pitch_hint,
+                "total_slides": total_slides,
+                "slides": slide_overview,
+                "criteria_scores": scores_overview,
+                "output_format": {
+                    "guide": ["발표 조언1", "발표 조언2"],
+                    "time_allocation": ["오프닝 (1분): 설명", "본론 (6분): 설명", "클로징 (1분): 설명"],
+                },
+            }, ensure_ascii=False)
+            out = gemini.generate_json(prompt, temperature=0.3)
+            g = out.get("guide", [])
+            ta = out.get("time_allocation", [])
+            if isinstance(g, list) and len(g) >= 2:
+                guide = [str(x).strip() for x in g if str(x).strip()][:5]
+            if isinstance(ta, list) and len(ta) >= 2:
+                time_allocation = [str(x).strip() for x in ta if str(x).strip()]
+        except Exception:
+            pass
+
+    if not guide:
+        guide = [
             "오프닝에서 문제의 크기와 대상 고객을 한 문장으로 먼저 제시하세요.",
             "중간에는 수치 근거가 있는 슬라이드를 중심으로 설명 순서를 유지하세요.",
             "클로징에서는 실행 계획과 요청사항(투자/선정/지원 필요성)을 명확히 정리하세요.",
             f"현재 피칭 맥락({pitch_hint})에 맞춰 심사 포인트를 반복 강조하세요.",
-        ],
-        "time_allocation": [
-            {"section": "오프닝", "seconds": 60},
-            {"section": "본론", "seconds": 360},
-            {"section": "클로징", "seconds": 60},
-        ],
+        ]
+    if not time_allocation:
+        time_allocation = _build_dynamic_time_allocation(slides, strategy)
+
+    return {
+        "emphasized_slides": emphasized,
+        "guide": guide,
+        "time_allocation": time_allocation,
     }
 
 
-def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _build_dynamic_time_allocation(
+    slides: List[Dict[str, Any]],
+    strategy: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    raw_minutes = (strategy or {}).get("presentation_minutes", 8)
+    try:
+        total_seconds = max(180, int(float(raw_minutes) * 60))
+    except Exception:
+        total_seconds = 480
+
+    categories = [str(slide.get("category", "OTHER")) for slide in slides]
+    story_slides = sum(1 for category in categories if category in {"PROBLEM", "SOLUTION", "MARKET", "BUSINESS_MODEL", "TRACTION"})
+    setup_slides = sum(1 for category in categories if category in {"COVER", "PROBLEM"})
+    closing_slides = sum(1 for category in categories if category in {"TEAM", "FINANCE", "ASK", "GTM"})
+    total_slides = max(1, len(slides))
+
+    opening_ratio = 0.14 + min(0.05, setup_slides / total_slides * 0.06)
+    closing_ratio = 0.12 + min(0.06, closing_slides / total_slides * 0.08)
+    if total_seconds <= 300:
+        opening_ratio += 0.03
+        closing_ratio -= 0.01
+    elif total_seconds >= 720:
+        closing_ratio += 0.02
+
+    opening_seconds = int(round(total_seconds * opening_ratio))
+    closing_seconds = int(round(total_seconds * closing_ratio))
+    body_seconds = total_seconds - opening_seconds - closing_seconds
+
+    if story_slides >= max(5, total_slides // 2):
+        body_seconds += 20
+        opening_seconds = max(40, opening_seconds - 10)
+        closing_seconds = max(35, closing_seconds - 10)
+
+    min_opening = 35 if total_seconds < 360 else 45
+    min_closing = 30 if total_seconds < 360 else 40
+    opening_seconds = max(min_opening, opening_seconds)
+    closing_seconds = max(min_closing, closing_seconds)
+    body_seconds = max(90, total_seconds - opening_seconds - closing_seconds)
+
+    allocated = opening_seconds + body_seconds + closing_seconds
+    if allocated != total_seconds:
+        body_seconds += total_seconds - allocated
+
+    return [
+        {"section": "오프닝", "seconds": opening_seconds},
+        {"section": "본론", "seconds": body_seconds},
+        {"section": "클로징", "seconds": closing_seconds},
+    ]
+
+
+def _llm_score_slides(
+    slides: List[Dict[str, Any]],
+    criteria_scores: List[Dict[str, Any]],
+    score_by_slide: Dict[int, List[int]],
+    gemini: GeminiJSONClient,
+) -> Dict[int, int]:
+    """LLM에게 슬라이드별 점수(0~100)를 요청하여 변별력 있는 점수 산출."""
+    try:
+        slide_info = []
+        for s in slides:
+            sn = s["slide_number"]
+            linked = score_by_slide.get(sn, [])
+            slide_info.append({
+                "num": sn,
+                "cat": s.get("category", "OTHER"),
+                "summary": (s.get("short_summary", "") or "")[:120],
+                "claims_count": len(s.get("key_claims", [])),
+                "text_len": len(s.get("clean_text", "")),
+                "linked_criteria_avg": int(round(sum(linked) / len(linked))) if linked else 0,
+            })
+        criteria_info = [
+            {"name": c["criteria_name"], "score": c["score"], "coverage": c.get("coverage_status")}
+            for c in criteria_scores
+        ]
+        prompt = json.dumps({
+            "instruction": (
+                "IR 피치덱의 각 슬라이드를 0~100점으로 채점하세요. JSON만 반환.\n"
+                "채점 기준:\n"
+                "- 핵심 메시지의 명확성 (투자자가 한 눈에 이해할 수 있는가)\n"
+                "- 정량적 근거의 충분성 (수치, 데이터, 출처가 있는가)\n"
+                "- 해당 카테고리에 맞는 핵심 요소 포함 여부\n"
+                "- 논리적 설득력 (주장과 근거가 연결되는가)\n"
+                "점수 분포 가이드:\n"
+                "- 90~100: 수치/사례 근거 충분 + 메시지 명확 + 설득력 높음\n"
+                "- 70~89: 메시지 명확하지만 근거가 부족하거나 일부 보완 필요\n"
+                "- 50~69: 내용은 있지만 구체성 부족, 설득력 약함\n"
+                "- 30~49: 핵심 내용 부재 또는 불명확\n"
+                "- 0~29: 거의 의미 없는 슬라이드\n"
+                "COVER 슬라이드는 40~60 범위로 채점하세요."
+            ),
+            "slides": slide_info,
+            "criteria_scores": criteria_info,
+            "output_format": {"scores": [{"num": 1, "score": 75}]},
+        }, ensure_ascii=False)
+        out = gemini.generate_json(prompt, temperature=0.1)
+        scores_list = out.get("scores", [])
+        result: Dict[int, int] = {}
+        for item in scores_list:
+            num = int(item.get("num", 0))
+            score = int(item.get("score", 50))
+            result[num] = max(0, min(100, score))
+        if len(result) >= len(slides) * 0.5:
+            return result
+    except Exception:
+        pass
+    return {}
+
+
+def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[str, Any]], gemini: Optional[Any] = None) -> List[Dict[str, Any]]:
     score_by_slide: Dict[int, List[int]] = {}
     criteria_by_slide: Dict[int, List[str]] = {}
     for c in criteria_scores:
         for sn in c.get("related_slides", []):
             score_by_slide.setdefault(sn, []).append(int(c.get("score", 0)))
             criteria_by_slide.setdefault(sn, []).append(str(c.get("criteria_name", "")))
+
+    # LLM 기반 슬라이드 점수 산출
+    if gemini and getattr(gemini, "model", None) and os.getenv("IR_FAST_MODE") != "1":
+        slide_scores = _llm_score_slides(slides, criteria_scores, score_by_slide, gemini)
+    else:
+        slide_scores = None
 
     out = []
     for slide in slides:
@@ -1201,28 +1945,56 @@ def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[
         text_len = len(slide.get("clean_text", ""))
         numbers = len(re.findall(r"\d", slide.get("clean_text", "")))
         cat_conf = float(slide.get("category_confidence", 0.5))
+        claims_count = len(slide.get("key_claims", []))
 
-        base = 45
-        if linked_scores:
-            base += int(round(sum(linked_scores) / len(linked_scores) * 0.35))
-        base += int(round(cat_conf * 20))
-        if numbers >= 8:
-            base += 8
-        elif numbers >= 3:
-            base += 4
-        if slide.get("category") == "OTHER":
-            base -= 8
-        if text_len > 1200:
-            base -= 6
-        if text_len < 40:
-            base -= 10
-        if slide["text_deficiency_flag"]:
-            base = min(base, 50)
+        # LLM 점수가 있으면 우선 사용
+        if slide_scores and sn in slide_scores:
+            base = slide_scores[sn]
+        else:
+            # 규칙 기반 점수 (변별력 강화)
+            base = 35  # 기본 베이스 낮춤
+
+            # 연결된 기준 점수 반영 (비중 높임)
+            if linked_scores:
+                avg_linked = sum(linked_scores) / len(linked_scores)
+                base += int(round(avg_linked * 0.30))
+            # 카테고리 분류 신뢰도 반영 (비중 줄임)
+            base += int(round(cat_conf * 10))
+
+            # 내용 풍부도 보너스/패널티
+            if numbers >= 8:
+                base += 6
+            elif numbers >= 3:
+                base += 3
+            if claims_count >= 3:
+                base += 5
+            elif claims_count >= 1:
+                base += 2
+
+            # 카테고리별 차등
+            if slide.get("category") == "OTHER":
+                base -= 12
+            elif slide.get("category") == "COVER":
+                base -= 8
+
+            # 텍스트 밀도 패널티
+            if text_len > 1200:
+                base -= 8
+            elif text_len > 800:
+                base -= 4
+            if text_len < 40:
+                base -= 15
+            elif text_len < 80:
+                base -= 8
+
+            if slide["text_deficiency_flag"]:
+                base = min(base, 40)
         detail = _slide_feedback(
             slide=slide,
             score=max(0, min(100, base)),
             matched_criteria=sorted(set(criteria_by_slide.get(sn, []))),
             numeric_count=numbers,
+            gemini=gemini,
         )
         out.append(
             {
@@ -1244,42 +2016,182 @@ def _slide_feedback(
     score: int,
     matched_criteria: List[str],
     numeric_count: int,
+    gemini: Optional[Any] = None,
 ) -> Dict[str, Any]:
+    # LLM 기반 피드백 시도
+    if gemini and getattr(gemini, "model", None) and os.getenv("IR_FAST_MODE") != "1":
+        try:
+            cat = slide.get("category", "OTHER")
+            summary = (slide.get("short_summary", "") or "")[:300]
+            text_len = len(slide.get("clean_text", "") or "")
+            num_claims = len(slide.get("key_claims", []))
+
+            # 텍스트 밀도 분석 정보
+            if text_len > 1000:
+                density_hint = f"텍스트 매우 많음({text_len}자) - 정보 과부하 가능성"
+            elif text_len > 600:
+                density_hint = f"텍스트 다소 많음({text_len}자)"
+            elif text_len < 50:
+                density_hint = f"텍스트 매우 적음({text_len}자) - 이미지/도표 위주이거나 내용 부족"
+            elif text_len < 150:
+                density_hint = f"텍스트 적음({text_len}자) - 비주얼 중심 슬라이드"
+            else:
+                density_hint = f"텍스트 적정({text_len}자)"
+
+            prompt = (
+                "IR 피치덱 슬라이드의 피드백을 JSON으로 작성하세요.\n"
+                "투자자 대상 발표 자료(IR Deck)라는 점을 반드시 고려하세요.\n\n"
+                f"슬라이드 번호: {slide['slide_number']}\n"
+                f"카테고리: {cat}\n"
+                f"점수: {score}/100\n"
+                f"요약: {summary}\n"
+                f"텍스트 밀도: {density_hint}\n"
+                f"수치 정보 개수: {numeric_count}개\n"
+                f"핵심 주장 수: {num_claims}개\n"
+                f"관련 평가 기준: {', '.join(matched_criteria[:3]) if matched_criteria else '없음'}\n\n"
+                "## 피드백 규칙\n"
+                f"- 이 슬라이드는 '{cat}' 유형입니다. 해당 유형에 맞는 구체적 피드백을 작성하세요.\n"
+                "- strengths: 이 슬라이드가 잘한 점 (구체적으로, 2~3개)\n"
+                "- improvements: 개선이 필요한 점 (구체적으로, 2~3개)\n"
+                "- detailed_feedback: 3~4문장으로 종합 피드백 (내용 + 구성/디자인 모두 포함)\n"
+                "- 모든 피드백은 해당 슬라이드 내용에 특화되어야 합니다\n"
+                "- 일반적/반복적 문구 사용 금지\n\n"
+                "## A. 내용(Content) 평가 포인트:\n"
+                "- PROBLEM: 문제의 구체성, 타겟 고객 명시, 데이터/사례 근거\n"
+                "- SOLUTION: 해결책 명확성, 차별점, 기능-문제 매핑\n"
+                "- PRODUCT: 데모/화면 명확성, 사용 흐름, UX\n"
+                "- MARKET: TAM/SAM/SOM 논리, 출처, 성장률 근거\n"
+                "- BUSINESS_MODEL: 수익 구조, 가격 정책, 단위 경제학\n"
+                "- TRACTION: 지표의 구체성, 시계열 추세, 고객 검증\n"
+                "- COMPETITION: 비교 기준 적절성, 차별점 명확성\n"
+                "- TEAM: 역할/경력 적합성, 실행 역량 근거\n"
+                "- FINANCE: 자금 배분 합리성, 마일스톤 연계\n"
+                "- ASK/GTM: 실행 계획 구체성, 목표 수치\n\n"
+                "## B. IR 덱 구성/디자인 평가 포인트 (반드시 1개 이상 피드백에 반영):\n"
+                "- **한 슬라이드 = 한 메시지 원칙**: 핵심 메시지가 하나로 명확한지, 여러 주제가 혼재되지 않았는지\n"
+                "- **텍스트 밀도**: 투자자가 3초 안에 핵심을 파악할 수 있는 분량인지 (이상적: 제목 1줄 + 본문 3~5줄 + 시각자료)\n"
+                "- **시각 자료 활용**: 숫자가 많다면 차트/그래프로 표현했는지, 텍스트만 나열하지 않았는지\n"
+                "- **정보 계층 구조**: 제목→소제목→본문→수치 순으로 시선 흐름이 자연스러운지\n"
+                "- **슬라이드 위치 적절성**: 이 카테고리의 슬라이드가 덱 전체 흐름에서 적절한 위치에 있는지\n"
+                "  (이상적 흐름: COVER→PROBLEM→SOLUTION→PRODUCT→MARKET→BM→TRACTION→COMPETITION→TEAM→FINANCE→ASK)\n"
+                "- **COVER 슬라이드**: 회사명/로고, 한 줄 태그라인, 산업/카테고리가 즉시 파악 가능한지\n"
+                "- **데이터 시각화**: 시장 규모나 실적 수치를 표/차트 없이 텍스트로만 나열하고 있지 않은지\n\n"
+                "출력: {\"detailed_feedback\":\"...\",\"strengths\":[\"...\"],\"improvements\":[\"...\"]}"
+            )
+            out = gemini.generate_json(prompt, temperature=0.2)
+            detailed = str(out.get("detailed_feedback", "")).strip()
+            s = out.get("strengths", [])
+            imp = out.get("improvements", [])
+            if detailed and isinstance(s, list) and isinstance(imp, list):
+                strength_list, improvement_list = _sanitize_feedback_lists(
+                    [str(x).strip() for x in s if str(x).strip()],
+                    [str(x).strip() for x in imp if str(x).strip()],
+                )
+                return {
+                    "detailed_feedback": detailed,
+                    "strengths": strength_list[:3],
+                    "improvements": improvement_list[:3],
+                }
+        except Exception:
+            pass
+
+    # Fallback: 규칙 기반
     strengths = []
     improvements = []
+    text_len = len(slide.get("clean_text", "") or "")
+    num_claims = len(slide.get("key_claims", []))
+
+    # 내용 강점
     if slide["category"] != "OTHER":
-        strengths.append(f"{slide['category']} 목적의 메시지가 확인됩니다.")
-    if len(slide.get("key_claims", [])) >= 2:
+        strengths.append(f"{DISPLAY_CATEGORY_LABELS.get(slide['category'], slide['category'])} 목적의 메시지가 보입니다.")
+    if num_claims >= 2:
         strengths.append("핵심 주장 문장이 2개 이상 있어 전달 포인트가 분명합니다.")
     if numeric_count >= 3:
         strengths.append("수치 정보가 포함되어 객관적 설명에 유리합니다.")
+    # 구성 강점
+    if 150 <= text_len <= 600 and num_claims >= 1:
+        strengths.append("텍스트 분량이 적절하여 투자자가 빠르게 핵심을 파악할 수 있습니다.")
     if matched_criteria:
         strengths.append(f"관련 기준: {', '.join(matched_criteria[:2])}")
 
+    # 내용 개선점
     if slide.get("text_deficiency_flag"):
         improvements.append("텍스트 근거가 부족하므로 핵심 문장/수치를 1~2개 추가하세요.")
-    if len(slide.get("clean_text", "")) > 900:
-        improvements.append("텍스트 밀도가 높아 핵심 문장 중심으로 압축하는 것이 좋습니다.")
     if numeric_count == 0:
         improvements.append("정량 근거(시장/사용자/매출 등) 수치를 최소 1개 이상 넣어주세요.")
-    if slide.get("category") in {"MARKET", "BUSINESS_MODEL"} and numeric_count < 2:
+
+    # 디자인/구성 개선점
+    if text_len > 900:
+        improvements.append(f"텍스트가 {text_len}자로 과도합니다. 투자자는 슬라이드당 3초를 봅니다. 제목 1줄 + 본문 3~5줄 + 시각자료로 압축하세요.")
+    elif text_len > 600:
+        improvements.append("텍스트가 다소 많습니다. '한 슬라이드 = 한 메시지' 원칙에 맞게 핵심만 남기세요.")
+    if text_len < 50 and slide.get("category") not in {"COVER"}:
+        improvements.append("텍스트가 너무 적습니다. 시각 자료와 함께 핵심 메시지 1~2문장을 반드시 포함하세요.")
+
+    if slide.get("category") in {"MARKET", "BUSINESS_MODEL", "TRACTION", "FINANCE"} and numeric_count >= 3:
+        improvements.append("수치가 여러 개 나열되어 있으므로 차트나 그래프로 시각화하면 전달력이 훨씬 높아집니다.")
+    elif slide.get("category") in {"MARKET", "BUSINESS_MODEL"} and numeric_count < 2:
         improvements.append("시장/수익 슬라이드는 계산식 또는 기준년/출처를 함께 제시하세요.")
-    if slide.get("category") == "TEAM":
-        improvements.append("팀 슬라이드는 역할/경력/실행성과를 한 줄씩 분리해 가독성을 높이세요.")
+
+    # 카테고리별 구성 피드백
+    if slide.get("category") == "COVER":
+        improvements.append("커버 슬라이드에 회사명, 한 줄 태그라인, 산업 카테고리가 즉시 파악되도록 구성하세요.")
+    elif slide.get("category") == "TEAM":
+        improvements.append("팀 슬라이드는 사진/이름/역할/핵심경력을 카드형으로 배치하면 가독성이 높아집니다.")
+    elif slide.get("category") == "COMPETITION":
+        improvements.append("경쟁 비교는 표 형태로 기준 항목과 자사 우위를 한눈에 볼 수 있게 구성하세요.")
+    elif slide.get("category") == "TRACTION":
+        improvements.append("실적은 시계열 차트로 성장 추세를 시각화하면 투자자의 신뢰도가 크게 올라갑니다.")
+    elif slide.get("category") == "BUSINESS_MODEL":
+        improvements.append("수익 모델은 플로우차트나 도식으로 돈의 흐름을 시각적으로 보여주세요.")
+    elif slide.get("category") == "GTM":
+        improvements.append("고객 확보 채널/기간/목표 수치를 타임라인 형태로 정리하면 실행력이 선명해집니다.")
+    elif slide.get("category") == "FINANCE":
+        improvements.append("자금 사용 항목을 마일스톤과 연결한 파이차트 또는 워터폴 차트로 제시하세요.")
+
     if not improvements:
         improvements.append("핵심 주장 1개를 제목으로 끌어올리고, 본문은 근거 2개로 압축하세요.")
 
     preview = (slide.get("short_summary", "") or "").strip()
     preview = preview[:90] + ("..." if len(preview) > 90 else "")
     detailed = (
-        f"슬라이드 {slide['slide_number']}({slide['category']}) 점수는 {score}점입니다. "
-        f"요약: {preview}"
+        f"슬라이드 {slide['slide_number']}은 {DISPLAY_CATEGORY_LABELS.get(slide['category'], slide['category'])} 성격이며 점수는 {score}점입니다. "
+        f"핵심 메시지: {preview} "
     )
+    # 구성/디자인 관련 한마디 추가
+    if text_len > 900:
+        detailed += "텍스트 과다로 정보 전달력이 떨어질 수 있으니 시각 자료 활용을 권장합니다."
+    elif text_len < 50 and slide.get("category") not in {"COVER"}:
+        detailed += "텍스트가 부족하여 핵심 메시지 전달이 어려울 수 있습니다."
+    else:
+        detailed += "슬라이드 구성과 정보 밀도를 점검하여 투자자의 시선 흐름을 최적화하세요."
     return {
         "detailed_feedback": detailed,
         "strengths": strengths[:3],
         "improvements": improvements[:3],
     }
+
+
+def _sanitize_feedback_lists(strengths: List[str], improvements: List[str]) -> Tuple[List[str], List[str]]:
+    negative_markers = ["부족", "누락", "미흡", "불명확", "약함", "보강", "추가", "필요", "없습니다", "낮습니다"]
+    positive_markers = ["명확", "구체", "확인", "보입니다", "드러납니다", "강점", "장점", "유리", "탄탄"]
+
+    clean_strengths: List[str] = []
+    clean_improvements: List[str] = list(improvements)
+
+    for item in strengths:
+        if any(marker in item for marker in negative_markers):
+            clean_improvements.append(item)
+            continue
+        clean_strengths.append(item)
+
+    filtered_improvements = []
+    for item in clean_improvements:
+        if any(marker in item for marker in positive_markers) and not any(marker in item for marker in negative_markers):
+            continue
+        filtered_improvements.append(item)
+
+    return clean_strengths[:3], filtered_improvements[:3]
 
 
 def _clamp01(value: float) -> float:

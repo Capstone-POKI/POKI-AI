@@ -108,7 +108,6 @@ def empty_notice_result() -> Dict[str, Any]:
         "evaluation_structure_type": "NOT_EXPLICIT",
         "extraction_confidence": 0.0,
         "evaluation_criteria": [],
-        "additional_criteria": [],
         "ir_deck_guide": "",
     }
 
@@ -137,7 +136,9 @@ def normalize_notice_result(
         tables=tables,
         notice_text=notice_text,
     )
-    normalized["additional_criteria"] = _normalize_additional_criteria(raw.get("additional_criteria"))
+    additional_criteria = _normalize_additional_criteria(raw.get("additional_criteria"))
+    if additional_criteria:
+        normalized["additional_criteria"] = additional_criteria
     normalized["ir_deck_guide"] = _to_str(raw.get("ir_deck_guide"))
 
     # Backward compatibility for older prompt outputs.
@@ -167,14 +168,16 @@ def normalize_notice_result(
 
     filtered, bonus_items = _filter_and_capture_bonus_criteria(normalized["evaluation_criteria"])
     normalized["evaluation_criteria"] = filtered
-    if bonus_items and not normalized["additional_criteria"]:
+    if bonus_items and not normalized.get("additional_criteria"):
         normalized["additional_criteria"] = bonus_items
 
     # Fallback: extract 우대사항 from tables/text if still empty
-    if not normalized["additional_criteria"]:
-        normalized["additional_criteria"] = _extract_additional_criteria_from_sources(
+    if not normalized.get("additional_criteria"):
+        extracted_additional_criteria = _extract_additional_criteria_from_sources(
             tables or [], notice_text,
         )
+        if extracted_additional_criteria:
+            normalized["additional_criteria"] = extracted_additional_criteria
 
     normalized["extraction_confidence"] = _adjust_confidence_by_points_quality(
         normalized["extraction_confidence"],
