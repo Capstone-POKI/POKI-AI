@@ -14,12 +14,8 @@ app = FastAPI(title="POKI-AI Service", version="0.1.0")
 app.include_router(health_router)
 app.include_router(notice_router)
 app.include_router(ir_router)
-try:
-    from app.api.voice import router as voice_router
-
-    app.include_router(voice_router)
-except Exception:  # pragma: no cover
-    pass
+from app.api.voice import router as voice_router
+app.include_router(voice_router)
 
 
 @app.exception_handler(HTTPException)
