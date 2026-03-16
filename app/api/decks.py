@@ -73,6 +73,7 @@ class DeckResultRow:
     criteria_scores: list[dict] = field(default_factory=list)
     presentation_guide: dict = field(default_factory=dict)
     slides: list[dict] = field(default_factory=list)
+    raw_payload: dict = field(default_factory=dict)
 
 
 _LOCK = threading.Lock()
@@ -335,6 +336,7 @@ def _run_ir_analysis_background(
             raise RuntimeError("최종 분석 JSON이 생성되지 않았습니다.")
         payload = json.loads(final_path.read_text(encoding="utf-8"))
         mapped = _map_deck_payload_to_result(payload, pitch_id=pitch_id)
+        mapped.raw_payload = payload
 
         with _LOCK:
             row = _DECK_BY_ID.get(deck_id)
