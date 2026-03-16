@@ -16,12 +16,34 @@ jobs:
           key: ${{ secrets.EC2_KEY }}
           passphrase: ${{ secrets.SSH_PASSPHRASE }}
           script: |
-            sudo fuser -k 8000/tcp || true
-            docker ps --filter "publish=8000" -q | xargs -r docker rm -f || true
+            cleanup_port_8000() {
+              sudo fuser -k 8000/tcp || true
+              docker ps -a --filter "publish=8000" -q | xargs -r docker rm -f || true
+              sudo lsof -tiTCP:8000 -sTCP:LISTEN | xargs -r sudo kill -9 || true
+            }
+
+            wait_for_port_8000() {
+              for _ in $(seq 1 10); do
+                if ! sudo lsof -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
+                  return 0
+                fi
+                sleep 1
+              done
+              return 1
+            }
+
+            cleanup_port_8000
             cd ~/Pitchcoach-AI
             git fetch origin main
             git checkout main
             git pull --ff-only origin main
             docker compose config -q
             docker compose down --remove-orphans || true
+            cleanup_port_8000
+            if ! wait_for_port_8000; then
+              echo "Port 8000 is still in use after cleanup."
+              sudo lsof -iTCP:8000 -sTCP:LISTEN || true
+              docker ps -a --filter "publish=8000" || true
+              exit 1
+            fi
             docker compose up -d --build
