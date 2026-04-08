@@ -275,18 +275,6 @@ def _format_additional_criteria(items: list[dict]) -> str | None:
     return None
 
 
-def _build_ir_deck_guide(row: NoticeRow) -> str:
-    """Merge summary + core_requirements into ir_deck_guide."""
-    parts: list[str] = []
-    if row.summary:
-        parts.append(f"[공고 요약]\n{row.summary}")
-    if row.core_requirements:
-        parts.append(f"[핵심 요구사항]\n{row.core_requirements}")
-    if row.ir_deck_guide:
-        parts.append(f"[IR Deck 가이드]\n{row.ir_deck_guide}")
-    return "\n\n".join(parts) if parts else f"{row.pitch_type} 기반 IR Deck 가이드 템플릿..."
-
-
 def _next_notice_version(pitch_id: str) -> int:
     ids = _NOTICE_IDS_BY_PITCH.get(pitch_id, [])
     if not ids:
@@ -451,7 +439,7 @@ def get_notice_result(notice_id: str = FPath(..., description="Notice ID")):
         application_period=row.application_period,
         evaluation_criteria=criteria,
         additional_criteria=_format_additional_criteria(row.additional_criteria),
-        ir_deck_guide=_build_ir_deck_guide(row),
+        ir_deck_guide=row.ir_deck_guide,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -519,7 +507,7 @@ def patch_notice(notice_id: str, payload: NoticeUpdateRequest):
             application_period=row.application_period,
             evaluation_criteria=criteria,
             additional_criteria=_format_additional_criteria(row.additional_criteria),
-            ir_deck_guide=_build_ir_deck_guide(row),
+            ir_deck_guide=row.ir_deck_guide,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
