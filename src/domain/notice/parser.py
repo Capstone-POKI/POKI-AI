@@ -171,6 +171,12 @@ def normalize_notice_result(
     if bonus_items and not normalized.get("additional_criteria"):
         normalized["additional_criteria"] = bonus_items
 
+    normalized["evaluation_criteria"] = _apply_even_point_distribution_if_needed(
+        normalized["evaluation_criteria"],
+        tables or [],
+        notice_text,
+    )
+
     # Fallback: extract 우대사항 from tables/text if still empty
     if not normalized.get("additional_criteria"):
         extracted_additional_criteria = _extract_additional_criteria_from_sources(
@@ -262,6 +268,46 @@ def _normalize_legacy_eval_items(
     return items
 
 
+def _apply_even_point_distribution_if_needed(
+    criteria: List[Dict[str, Any]],
+    tables: List[Dict[str, Any]],
+    notice_text: str,
+) -> List[Dict[str, Any]]:
+    if not criteria:
+        return criteria
+
+    point_values = []
+    for item in criteria:
+        if not isinstance(item, dict):
+            continue
+        value = _to_number(item.get("points"))
+        point_values.append(float(value) if isinstance(value, (int, float)) else 0.0)
+
+    # Apply only when per-item scores were not found at all.
+    if any(value > 0 for value in point_values):
+        return criteria
+
+    total_points = _infer_total_points_from_sources(tables, notice_text)
+    if total_points is None or total_points <= 0:
+        return criteria
+
+    count = len(criteria)
+    if count == 0:
+        return criteria
+
+    base_points = total_points // count
+    remainder = total_points % count
+    if base_points <= 0:
+        return criteria
+
+    distributed: List[Dict[str, Any]] = []
+    for index, item in enumerate(criteria):
+        next_item = dict(item)
+        next_item["points"] = base_points + (1 if index < remainder else 0)
+        distributed.append(next_item)
+    return distributed
+
+
 def _to_str(value: Any) -> str:
     if value is None:
         return ""
@@ -320,6 +366,65 @@ def _extract_points_from_text(text: str) -> Optional[Number]:
         return _to_number(ratio_match.group(1))
 
     return _to_number(cleaned)
+
+
+def _infer_total_points_from_sources(
+    tables: List[Dict[str, Any]],
+    notice_text: str,
+) -> Optional[int]:
+    total_from_tables = _infer_total_points_from_tables(tables)
+    if total_from_tables is not None:
+        return total_from_tables
+    return _infer_total_points_from_notice_text(notice_text)
+
+
+def _infer_total_points_from_tables(tables: List[Dict[str, Any]]) -> Optional[int]:
+    for table in tables:
+        rows = table.get("rows", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            row_text = " ".join(_to_str(cell) for cell in row)
+            total = _extract_total_points_from_text(row_text)
+            if total is not None:
+                return total
+    return None
+
+
+def _infer_total_points_from_notice_text(notice_text: str) -> Optional[int]:
+    cleaned_text = _to_str(notice_text)
+    if not cleaned_text:
+        return None
+
+    for block in _candidate_text_blocks(cleaned_text):
+        total = _extract_total_points_from_text(block)
+        if total is not None:
+            return total
+
+    return _extract_total_points_from_text(cleaned_text)
+
+
+def _extract_total_points_from_text(text: str) -> Optional[int]:
+    cleaned = _to_str(text)
+    if not cleaned:
+        return None
+
+    patterns = [
+        r"총\s*(\d+)\s*점",
+        r"(\d+)\s*점\s*만점",
+        r"평가\s*항목\s*\(\s*(\d+)\s*점\s*만점\s*\)",
+        r"심사\s*항목\s*\(\s*(\d+)\s*점\s*만점\s*\)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, cleaned)
+        if not match:
+            continue
+        value = _to_number(match.group(1))
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    return None
 
 
 def _infer_points_from_tables(criteria_name: str, tables: List[Dict[str, Any]]) -> Optional[Number]:
