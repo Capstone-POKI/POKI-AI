@@ -198,6 +198,61 @@ def _load_notice_criteria_for_deck(pitch_id: str) -> list[dict] | None:
         return None
 
 
+def _load_notice_strategy_for_pitch(pitch_id: str) -> dict | None:
+    """Build IR strategy directly from latest notice criteria (name/points).
+
+    This guarantees IR scoring rubric follows notice fields as-is.
+    """
+    if notice_router_module is None:
+        return None
+    try:
+        lock = getattr(notice_router_module, "_LOCK", None)
+        by_pitch = getattr(notice_router_module, "_NOTICE_IDS_BY_PITCH", None)
+        by_id = getattr(notice_router_module, "_NOTICE_BY_ID", None)
+        c_by_notice = getattr(notice_router_module, "_CRITERIA_BY_NOTICE_ID", None)
+        if lock is None or by_pitch is None or by_id is None or c_by_notice is None:
+            return None
+
+        with lock:
+            ids = by_pitch.get(pitch_id, [])
+            if not ids:
+                return None
+
+            latest_id = None
+            latest_ver = -1
+            latest_notice_row = None
+            for nid in ids:
+                row = by_id.get(nid)
+                if row is None:
+                    continue
+                if getattr(row, "is_latest", False) and int(getattr(row, "version", 0)) >= latest_ver:
+                    latest_id = nid
+                    latest_ver = int(getattr(row, "version", 0))
+                    latest_notice_row = row
+            if latest_id is None:
+                return None
+
+            rows = c_by_notice.get(latest_id, []) or []
+            evaluation_criteria: list[dict] = []
+            for r in sorted(rows, key=lambda x: int(getattr(x, "display_order", 9999))):
+                name = str(getattr(r, "criteria_name", "")).strip()
+                points = int(getattr(r, "points", 0) or 0)
+                if not name or points <= 0:
+                    continue
+                evaluation_criteria.append({"criteria_name": name, "points": points})
+
+            if not evaluation_criteria:
+                return None
+
+            return {
+                "type": str(getattr(latest_notice_row, "recruitment_type", "") or "기타"),
+                "evaluation_criteria": evaluation_criteria,
+                "focus_point": str(getattr(latest_notice_row, "core_requirements", "") or ""),
+            }
+    except Exception:
+        return None
+
+
 def _map_deck_payload_to_result(payload: dict, pitch_id: str) -> DeckResultRow:
     deck_raw = payload.get("deck_score", {}) if isinstance(payload, dict) else {}
     criteria_raw = payload.get("criteria_scores", []) if isinstance(payload, dict) else []
@@ -396,6 +451,9 @@ async def upload_ir_and_analyze(
             raise
         except Exception:
             _raise_error(400, "INVALID_STRATEGY", "strategy_json 형식이 올바르지 않습니다")
+    else:
+        # Default behavior: use latest notice criteria as-is for IR scoring.
+        strategy = _load_notice_strategy_for_pitch(pitch_id)
 
     DECK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
