@@ -67,6 +67,7 @@ class GeminiJSONClient:
         }
 
         last_error = ""
+        timeout_sec = float(os.getenv("GEMINI_TIMEOUT_SEC", "120"))
         for model_name in self.model_candidates:
             api_version = "v1beta"
             url = f"https://generativelanguage.googleapis.com/{api_version}/models/{quote(model_name)}:generateContent"
@@ -74,7 +75,7 @@ class GeminiJSONClient:
                 url,
                 headers=headers,
                 json=payload,
-                timeout=120,
+                timeout=timeout_sec,
             )
 
             if response.status_code in (404, 400, 429, 503):
