@@ -54,6 +54,7 @@ def run_ir_analysis(
             strategy=strategy,
             analysis_version=1,
             pitch_type=pitch_type,
+            source_pdf_path=str(ir_pdf),
         )
     except Exception as e:
         print(f"⚠️ B안 파이프라인 실패, 기존 엔진으로 폴백: {e}")
