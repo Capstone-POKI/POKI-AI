@@ -7,8 +7,8 @@ from pydub import AudioSegment
 import numpy as np
 import librosa
 from openai import OpenAI
-from google import genai
-from google.genai import types
+
+from src.infrastructure.gemini.client import GeminiJSONClient
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 AUDIO_FILE = BASE_DIR / "data" / "input" / "sample_sound.m4a"
@@ -64,12 +64,7 @@ with open(PROMPT_PATH, "r", encoding="utf-8") as f:
     IR_PROMPT_TEMPLATE = f.read()
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-gemini_client = genai.Client(
-    vertexai=True,
-    project=os.getenv("PROJECT_ID"),
-    location=os.getenv("LOCATION"),
-)
+gemini_client = GeminiJSONClient()
 
 
 def load_deck_json(path: Path) -> Dict[str, Any]:
@@ -297,15 +292,10 @@ def analyze_with_gemini(
     prompt_prefix = deck_ctx + "\n\n" + audio_ctx + "\n\n"
     final_prompt = prompt_prefix + IR_PROMPT_TEMPLATE.replace('{{$json["text"]}}', transcript_text)
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=final_prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.2,
-        ),
-    )
-    return response.text
+    if not gemini_client.model:
+        raise RuntimeError("Gemini model is not available")
+    result = gemini_client.generate_json(final_prompt, temperature=0.2)
+    return json.dumps(result, ensure_ascii=False)
 
 
 # [신규] 슬라이드별 발화 텍스트를 Gemini에 한 번에 보내 슬라이드 단위 피드백 생성
@@ -367,16 +357,9 @@ def analyze_slides_with_gemini(
 - 모든 문장은 ~니다 톤
 """
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.2,
-        ),
-    )
-
-    parsed = json.loads(response.text)
+    if not gemini_client.model:
+        return []
+    parsed = gemini_client.generate_json(prompt, temperature=0.2)
     if not isinstance(parsed, list):
         return []
 
