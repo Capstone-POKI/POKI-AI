@@ -1,12 +1,16 @@
 import json
 import os
 import re
+from io import BytesIO
 from math import sqrt
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from pdf2image import convert_from_path
+
 from src.infrastructure.embedding.client import EmbeddingClient, GeminiEmbeddingClient
 from src.infrastructure.gemini.client import GeminiJSONClient
+from src.infrastructure.storage.s3_adapter import S3Adapter
 
 
 DEFAULT_TOP_K = 3
@@ -281,6 +285,7 @@ def run_rag_ir_analysis(
     strategy: Optional[Dict[str, Any]] = None,
     analysis_version: int = 1,
     pitch_type: Optional[str] = None,
+    source_pdf_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not docai_result:
         raise RuntimeError("OCR 결과가 비어 있습니다.")
@@ -320,9 +325,38 @@ def run_rag_ir_analysis(
     )
 
     print("🧩 [RAG] 종합 점수/가이드 생성")
-    deck_score = _build_deck_score(criteria_scores, rubric, strategy, gemini)
-    presentation_guide = _build_presentation_guide(valid_slides, criteria_scores, strategy, gemini)
-    slide_cards = _build_slide_cards(valid_slides, criteria_scores, gemini)
+    total_score = _calculate_total_score(criteria_scores, rubric)
+    deck_summary_bundle = _build_deck_summary_bundle_llm(
+        slides=valid_slides,
+        criteria_scores=criteria_scores,
+        total_score=total_score,
+        strategy=strategy,
+        gemini=gemini,
+    )
+    deck_score = _build_deck_score(
+        criteria_scores=criteria_scores,
+        rubric=rubric,
+        total_score=total_score,
+        llm_bundle=deck_summary_bundle,
+    )
+    presentation_guide = _build_presentation_guide(
+        slides=valid_slides,
+        criteria_scores=criteria_scores,
+        strategy=strategy,
+        llm_bundle=deck_summary_bundle,
+    )
+    deck_id = Path(output_path).stem.replace("_final", "")
+    thumbnail_urls = _build_slide_thumbnail_urls(
+        source_pdf_path=source_pdf_path,
+        deck_id=deck_id,
+        slide_numbers=[int(s.get("slide_number", 0) or 0) for s in valid_slides],
+    )
+    slide_cards = _build_slide_cards(
+        valid_slides,
+        criteria_scores,
+        gemini,
+        thumbnail_urls=thumbnail_urls,
+    )
 
     final_output: Dict[str, Any] = {
         "analysis_version": analysis_version,
@@ -990,46 +1024,66 @@ def _apply_strategy_to_rubric(
     if not isinstance(criteria, list) or not criteria:
         return rubric
 
-    points_by_group: Dict[str, float] = {}
+    parsed: List[Tuple[str, float]] = []
     for item in criteria:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("criteria_name", "")).strip()
-        points = item.get("points")
-        if not name or not isinstance(points, (int, float)):
-            continue
-        mapped = _map_strategy_criterion_to_group(name)
-        if mapped:
-            points_by_group[mapped] = float(points)
+        parsed_item = _parse_strategy_criterion(item)
+        if parsed_item:
+            parsed.append(parsed_item)
 
-    total_points = sum(points_by_group.values())
+    total_points = sum(points for _, points in parsed)
     if total_points <= 0:
         return rubric
 
+    base_groups = {
+        str(group.get("group_id", "")).strip(): dict(group)
+        for group in (rubric.get("groups", []) or [])
+        if str(group.get("group_id", "")).strip()
+    }
+
     updated_groups = []
-    for group in rubric.get("groups", []):
-        gid = str(group.get("group_id", ""))
-        if gid in points_by_group:
-            updated = dict(group)
-            max_score = float(points_by_group[gid])
+    used_group_ids: set[str] = set()
+    for idx, (name, points) in enumerate(parsed, start=1):
+        mapped = _map_strategy_criterion_to_group(name)
+        base = base_groups.get(mapped) if mapped else None
+        group_id = mapped or f"CUSTOM_{idx}"
+
+        # 동일 그룹으로 여러 기준이 매핑되면 첫 항목만 기준 그룹으로 쓰고 나머지는 커스텀으로 분리
+        if group_id in used_group_ids:
+            base = None
+            group_id = f"CUSTOM_{idx}"
+        used_group_ids.add(group_id)
+
+        if base:
+            updated = dict(base)
+            updated["group_id"] = group_id
+            updated["group_name"] = name
+            max_score = float(points)
             updated["max_score"] = max_score
             updated["group_weight"] = max_score / total_points
-            items = []
-            raw_items = group.get("items", []) or []
-            if raw_items:
-                item_portion = max_score / max(1, len(raw_items))
-                for idx, item in enumerate(raw_items):
-                    new_item = dict(item)
-                    if idx == len(raw_items) - 1:
-                        assigned = round(max_score - item_portion * (len(raw_items) - 1), 2)
-                    else:
-                        assigned = round(item_portion, 2)
-                    new_item["max_score"] = assigned
-                    items.append(new_item)
+            raw_items = base.get("items", []) or []
+            items = _rescale_group_items(raw_items, max_score)
             updated["items"] = items or raw_items
             updated_groups.append(updated)
-        else:
-            updated_groups.append(group)
+            continue
+
+        max_score = float(points)
+        updated_groups.append(
+            {
+                "group_id": group_id,
+                "group_name": name,
+                "group_weight": max_score / total_points,
+                "max_score": max_score,
+                "items": [
+                    {
+                        "item_id": f"{group_id}_01",
+                        "item_name": name,
+                        "description": f"{name} 관련 근거와 실행 계획",
+                        "max_score": max_score,
+                        "fail_if_missing": False,
+                    }
+                ],
+            }
+        )
 
     updated_rubric = dict(rubric)
     updated_rubric["groups"] = updated_groups
@@ -1041,17 +1095,63 @@ def _map_strategy_criterion_to_group(name: str) -> Optional[str]:
     normalized = name.replace(" ", "").lower()
     mapping = {
         "문제정의": "PROBLEM",
+        "문제인식": "PROBLEM",
         "솔루션": "SOLUTION",
+        "혁신성": "SOLUTION",
+        "기술혁신성": "SOLUTION",
         "시장/비즈니스": "MARKET_BM",
         "시장비즈니스": "MARKET_BM",
         "시장": "MARKET_BM",
+        "시장성": "MARKET_BM",
         "비즈니스": "MARKET_BM",
         "실적": "TRACTION",
+        "성장성": "TRACTION",
         "팀": "TEAM",
+        "팀역량": "TEAM",
+        "창업가(팀)역량": "TEAM",
+        "창업가팀역량": "TEAM",
+        "창업가역량": "TEAM",
         "자금계획": "FINANCE",
         "자금": "FINANCE",
     }
     return mapping.get(normalized)
+
+
+def _parse_strategy_criterion(item: Any) -> Optional[Tuple[str, float]]:
+    if isinstance(item, dict):
+        name = str(item.get("criteria_name") or item.get("name") or "").strip()
+        points = item.get("points")
+        if name and isinstance(points, (int, float)):
+            return name, float(points)
+        return None
+
+    if isinstance(item, str):
+        raw = item.strip()
+        if not raw:
+            return None
+        m = re.match(r"^(?P<name>.+?)\s*[\(\[]\s*(?P<points>\d+(?:\.\d+)?)\s*(?:점|%)?\s*[\)\]]\s*$", raw)
+        if m:
+            return m.group("name").strip(), float(m.group("points"))
+        m = re.match(r"^(?P<name>.+?)\s*[:：-]\s*(?P<points>\d+(?:\.\d+)?)\s*(?:점|%)?\s*$", raw)
+        if m:
+            return m.group("name").strip(), float(m.group("points"))
+    return None
+
+
+def _rescale_group_items(raw_items: List[Dict[str, Any]], max_score: float) -> List[Dict[str, Any]]:
+    if not raw_items:
+        return []
+    item_portion = max_score / max(1, len(raw_items))
+    items: List[Dict[str, Any]] = []
+    for idx, item in enumerate(raw_items):
+        new_item = dict(item)
+        if idx == len(raw_items) - 1:
+            assigned = round(max_score - item_portion * (len(raw_items) - 1), 2)
+        else:
+            assigned = round(item_portion, 2)
+        new_item["max_score"] = assigned
+        items.append(new_item)
+    return items
 
 
 def _embed_rubric_items(rubric: Dict[str, Any], embed_client: Optional[EmbeddingClient]) -> None:
@@ -1135,6 +1235,7 @@ def _score_criteria_with_rag(
                     "max_similarity": max_sim,
                     "related_slides": [e["slide_number"] for e in evidences],
                     "top_summary": (evidences[0]["summary"] if evidences else ""),
+                    "top_quote": _extract_evidence_quote((evidences[0].get("clean_text", "") if evidences else "")),
                 }
             )
 
@@ -1156,6 +1257,13 @@ def _score_criteria_with_rag(
                     fallback_related.append(int(rel[0]))
             related_unique = sorted(set(fallback_related))
         group_coverage = _reduce_group_coverage(coverage_values, coverage_weights)
+        avg_max_similarity = _average(
+            [float(ev.get("max_similarity", 0.0)) for ev in evidence_for_group]
+        )
+        covered_count = sum(1 for v in coverage_values if v == "COVERED")
+        partial_count = sum(1 for v in coverage_values if v == "PARTIALLY_COVERED")
+        item_count = max(1, len(group_items))
+        coverage_ratio = (covered_count + (0.5 * partial_count)) / item_count
         score_100 = int(round((raw_group_score / raw_group_max) * 100)) if raw_group_max > 0 else 0
         score_100, related_unique, feedback_boost = _apply_group_score_floor(
             group_id=str(group.get("group_id", "")),
@@ -1169,8 +1277,27 @@ def _score_criteria_with_rag(
             missing_items=missing_items,
             gemini=gemini,
         )
+        reliability = _compute_group_reliability(
+            llm_confidence=confidence,
+            avg_max_similarity=avg_max_similarity,
+            related_count=len(related_unique),
+            item_count=item_count,
+            missing_count=len(missing_items),
+            coverage=group_coverage,
+        )
+        score_100 = _calibrate_group_score(
+            score_100=score_100,
+            coverage=group_coverage,
+            confidence=confidence,
+            related_count=len(related_unique),
+            missing_count=len(missing_items),
+            avg_max_similarity=avg_max_similarity,
+            coverage_ratio=coverage_ratio,
+            reliability=reliability,
+        )
         if feedback_boost:
             feedback = f"{feedback} {feedback_boost}".strip()
+        blended_confidence = _clamp01((confidence * 0.4) + (reliability * 0.6))
 
         criteria_scores.append(
             {
@@ -1187,7 +1314,8 @@ def _score_criteria_with_rag(
                 "feedback": feedback,
                 "related_slides": related_unique,
                 "missing_items": missing_items,
-                "confidence": confidence,
+                "confidence": round(blended_confidence, 3),
+                "evidence_reliability": round(reliability, 3),
             }
         )
     return _validate_and_repair_criteria(criteria_scores)
@@ -1429,11 +1557,11 @@ def _score_item(item_max: float, coverage: str, similarity: float) -> float:
         return 0.0
     if coverage == "PARTIALLY_COVERED":
         sim_high = max(0.01, min(0.99, _sim_high()))
-        ratio = max(0.35, min(0.70, (similarity / sim_high) * 0.70))
+        ratio = max(0.30, min(0.75, (similarity / sim_high) * 0.75))
         return round(item_max * ratio, 2)
     # COVERED
     sim_high = max(0.01, min(0.99, _sim_high()))
-    ratio = 0.65 + max(0.0, min(1.0, (similarity - sim_high) / (1.0 - sim_high))) * 0.35
+    ratio = 0.55 + max(0.0, min(1.0, (similarity - sim_high) / (1.0 - sim_high))) * 0.45
     return round(item_max * ratio, 2)
 
 
@@ -1480,14 +1608,18 @@ def _build_group_feedback(
                 "group_items": [i.get("item_name") for i in group.get("items", [])],
                 "evidence": evidence_for_group,
                 "missing_items": missing_items,
-                "instruction": "근거 기반으로 2문장 피드백 작성. 과장 금지. JSON만 반환.",
+                "instruction": (
+                    "근거 기반으로 2문장 피드백 작성. 과장 금지. JSON만 반환. "
+                    "가능하면 근거 문구(숫자/표현)를 문장 안에 자연스럽게 녹여 쓰되, "
+                    "별도 태그([근거 인용 권장] 등)는 출력하지 마세요."
+                ),
                 "output_format": {"feedback": "...", "confidence": 0.0},
             }
             out = gemini.generate_json(json.dumps(prompt, ensure_ascii=False), temperature=0.2)
             feedback = str(out.get("feedback", "")).strip()
             confidence = _clamp01(float(out.get("confidence", 0.75)))
             if feedback:
-                return feedback, confidence
+                return _append_optional_evidence_quote(feedback, evidence_for_group), confidence
         except Exception:
             pass
 
@@ -1503,7 +1635,18 @@ def _build_group_feedback(
     top_ev = [ev for ev in evidence_for_group if ev.get("top_summary")]
     ev_summary = _compress_evidence_summary(top_ev[0]["top_summary"]) if top_ev else ""
     ev_hint = f" 주요 근거: {ev_summary}" if ev_summary else ""
-    return f"{group.get('group_name')} 항목은 근거 슬라이드가 확인되어 비교적 안정적으로 커버되었습니다.{ev_hint}", 0.72
+    base = f"{group.get('group_name')} 항목은 근거 슬라이드가 확인되어 비교적 안정적으로 커버되었습니다.{ev_hint}"
+    return _append_optional_evidence_quote(base, evidence_for_group), 0.72
+
+
+def _append_optional_evidence_quote(
+    feedback: str,
+    evidence_for_group: List[Dict[str, Any]],
+) -> str:
+    # External tag is intentionally suppressed.
+    # Evidence quoting should be handled by prompt-level guidance only.
+    _ = evidence_for_group
+    return feedback
 
 
 def _compress_evidence_summary(text: str) -> str:
@@ -1517,25 +1660,253 @@ def _compress_evidence_summary(text: str) -> str:
     return summary[:150] + ("..." if len(summary) > 150 else "")
 
 
-def _build_deck_score(
+def _extract_evidence_quote(text: str) -> str:
+    raw = re.sub(r"\s+", " ", (text or "")).strip()
+    if not raw:
+        return ""
+    candidates = re.split(r"(?<=[\.\!\?다])\s+", raw)
+    candidates = [c.strip(" \"'“”[]()") for c in candidates if c and c.strip()]
+    if not candidates:
+        candidates = [raw]
+    keyword_re = re.compile(r"(시장|매출|수익|성장|고객|검증|실적|투자|경쟁|팀|자금|\d)")
+    ranked = sorted(
+        candidates,
+        key=lambda s: (
+            0 if 30 <= len(s) <= 160 else 1,
+            0 if keyword_re.search(s) else 1,
+            abs(len(s) - 90),
+        ),
+    )
+    quote = ranked[0][:180]
+    return quote.strip()
+
+
+def _average(values: List[float]) -> float:
+    clean = [float(v) for v in values]
+    if not clean:
+        return 0.0
+    return sum(clean) / max(1, len(clean))
+
+
+def _compute_group_reliability(
+    llm_confidence: float,
+    avg_max_similarity: float,
+    related_count: int,
+    item_count: int,
+    missing_count: int,
+    coverage: str,
+) -> float:
+    related_ratio = min(1.0, related_count / max(1, item_count))
+    missing_ratio = min(1.0, missing_count / max(1, item_count))
+    coverage_base = 0.0
+    if coverage == "COVERED":
+        coverage_base = 1.0
+    elif coverage == "PARTIALLY_COVERED":
+        coverage_base = 0.65
+
+    reliability = (
+        (0.35 * _clamp01(llm_confidence))
+        + (0.30 * _clamp01(avg_max_similarity))
+        + (0.20 * related_ratio)
+        + (0.15 * coverage_base)
+        - (0.25 * missing_ratio)
+    )
+    if coverage == "PARTIALLY_COVERED":
+        reliability = min(reliability, 0.78)
+    elif coverage == "NOT_COVERED":
+        reliability = min(reliability, 0.25)
+    return _clamp01(reliability)
+
+
+def _calibrate_group_score(
+    score_100: int,
+    coverage: str,
+    confidence: float,
+    related_count: int,
+    missing_count: int,
+    avg_max_similarity: float,
+    coverage_ratio: float,
+    reliability: float,
+) -> int:
+    if coverage == "NOT_COVERED":
+        return 0
+
+    raw_score_100 = int(score_100)
+    adjusted = float(score_100)
+
+    # 1) Reliability-aware correction (strong evidence keeps score, weak evidence pulls down).
+    reliability_center = float(os.getenv("IR_RELIABILITY_CENTER", "0.66"))
+    reliability_gain = float(os.getenv("IR_RELIABILITY_GAIN", "35"))
+    adjusted += (reliability - reliability_center) * reliability_gain
+
+    # 2) Similarity/coverage correction.
+    if avg_max_similarity < _sim_mid():
+        adjusted -= 6.0
+    elif avg_max_similarity >= (_sim_high() + 0.08):
+        adjusted += 2.0
+    if coverage_ratio < 0.45:
+        adjusted -= 6.0
+    elif coverage_ratio < 0.60:
+        adjusted -= 2.0
+    elif coverage_ratio >= 0.85:
+        adjusted += 1.0
+
+    # 3) Coverage-aware cap/floor.
+    if coverage == "PARTIALLY_COVERED":
+        partial_cap = int(os.getenv("IR_PARTIAL_SCORE_CAP", "82"))
+        partial_floor = int(os.getenv("IR_PARTIAL_SCORE_FLOOR_WITH_EVIDENCE", "35"))
+        adjusted = min(adjusted, partial_cap)
+        if related_count >= 1:
+            adjusted = max(adjusted, partial_floor)
+    else:  # COVERED
+        if reliability < 0.55:
+            covered_cap = 90
+        elif reliability < 0.72:
+            covered_cap = 93
+        else:
+            covered_cap = 95
+        covered_floor = int(os.getenv("IR_COVERED_SCORE_FLOOR_WITH_EVIDENCE", "50"))
+        if confidence < 0.55:
+            covered_cap = min(covered_cap, 88)
+        adjusted = min(adjusted, covered_cap)
+        if related_count >= 2 and coverage_ratio >= 0.5:
+            adjusted = max(adjusted, covered_floor)
+        elif related_count >= 1:
+            adjusted = max(adjusted, 45)
+
+    # 4) Missing requirements penalty (stronger for discrimination).
+    adjusted -= min(15, missing_count * 5)
+
+    # 4.5) Low-reliability additional pull-down.
+    if reliability < 0.45:
+        adjusted -= 6.0
+    elif reliability < 0.55:
+        adjusted -= 3.0
+
+    # 5) Keep calibration bounded around raw evidence score.
+    max_upshift = int(os.getenv("IR_MAX_CALIBRATION_UPSHIFT", "4"))
+    max_downshift = int(os.getenv("IR_MAX_CALIBRATION_DOWNSHIFT", "24"))
+    adjusted = min(adjusted, raw_score_100 + max_upshift)
+    adjusted = max(adjusted, raw_score_100 - max_downshift)
+
+    return max(0, min(100, int(round(adjusted))))
+
+
+def _calculate_total_score(
     criteria_scores: List[Dict[str, Any]],
     rubric: Dict[str, Any],
-    strategy: Optional[Dict[str, Any]],
-    gemini: GeminiJSONClient,
-) -> Dict[str, Any]:
+) -> int:
+    # Use calibrated criterion score to keep total score consistent with displayed criteria.
     group_by_id = {g.get("group_id"): g for g in rubric.get("groups", [])}
     weighted_sum = 0.0
     for c in criteria_scores:
         gid = c.get("criteria_id")
         weight = float(group_by_id.get(gid, {}).get("group_weight", 0.0))
-        weighted_sum += (float(c.get("raw_score", 0.0)) / max(float(c.get("raw_max_score", 1.0)), 1.0)) * weight
-    total_score = int(round(weighted_sum * 100))
+        weighted_sum += (float(c.get("score", 0.0)) / 100.0) * weight
+    raw_total = int(round(weighted_sum * 100))
+    # Discrimination-friendly anchored scaling:
+    # keep center near anchor while expanding/reducing spread with gain.
+    anchor = float(os.getenv("IR_TOTAL_SCORE_ANCHOR", "65"))
+    gain = float(os.getenv("IR_TOTAL_SCORE_GAIN", "2.4"))
+    bias = float(os.getenv("IR_TOTAL_SCORE_BIAS", "0"))
+    floor = int(os.getenv("IR_TOTAL_SCORE_FLOOR", "0"))
+    ceiling = int(os.getenv("IR_TOTAL_SCORE_CEILING", "100"))
+    calibrated = anchor + ((raw_total - anchor) * gain) + bias
+    return max(floor, min(ceiling, int(round(calibrated))))
+
+
+def _build_deck_summary_bundle_llm(
+    slides: List[Dict[str, Any]],
+    criteria_scores: List[Dict[str, Any]],
+    total_score: int,
+    strategy: Optional[Dict[str, Any]],
+    gemini: GeminiJSONClient,
+) -> Dict[str, Any]:
+    if (
+        not gemini
+        or not getattr(gemini, "model", None)
+        or os.getenv("IR_FAST_MODE") == "1"
+    ):
+        return {}
+
+    try:
+        print("   - deck_bundle: 덱 전체 요약/가이드 생성")
+        criteria_info = [
+            {
+                "name": c["criteria_name"],
+                "score": c["score"],
+                "coverage": c.get("coverage_status"),
+                "feedback": (c.get("feedback", "") or "")[:150],
+                "related_slides": c.get("related_slides", []),
+                "missing": [m.get("item_name", "") for m in c.get("missing_items", [])],
+            }
+            for c in criteria_scores
+        ]
+        slide_overview = [
+            {
+                "num": s["slide_number"],
+                "cat": s.get("category", "OTHER"),
+                "summary": (s.get("short_summary", "") or "")[:80],
+            }
+            for s in slides
+        ]
+        prompt = json.dumps(
+            {
+                "instruction": (
+                    "IR 피치덱 전체 요약과 발표 가이드를 JSON으로 작성하세요.\n"
+                    "- strengths: 덱 전체 강점 2~3개\n"
+                    "- improvements: 덱 전체 개선점 2~3개\n"
+                    "- top_actions: 즉시 실행 액션 2~3개\n"
+                    "- structure_summary: 3~4문장 구조 총평\n"
+                    "- guide: 발표 전략 조언 3~5개\n"
+                    "- time_allocation: 발표 시간 배분 문자열 3개 이상\n"
+                    "- 모든 내용은 실제 슬라이드/기준 점수에 근거해야 하며 일반론 금지"
+                ),
+                "pitch_type": (strategy or {}).get("type", "VC_DEMO"),
+                "presentation_minutes": (strategy or {}).get("presentation_minutes", 8),
+                "total_score": total_score,
+                "criteria_scores": criteria_info,
+                "slides": slide_overview,
+                "output_format": {
+                    "strengths": ["강점1", "강점2"],
+                    "improvements": ["개선점1", "개선점2"],
+                    "top_actions": ["액션1", "액션2"],
+                    "structure_summary": "총평",
+                    "guide": ["가이드1", "가이드2"],
+                    "time_allocation": [
+                        "오프닝 (1분): 설명",
+                        "본론 (6분): 설명",
+                        "클로징 (1분): 설명",
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        )
+        out = gemini.generate_json(prompt, temperature=0.2)
+        return out if isinstance(out, dict) else {}
+    except Exception:
+        return {}
+
+
+def _build_deck_score(
+    criteria_scores: List[Dict[str, Any]],
+    rubric: Dict[str, Any],
+    total_score: int,
+    llm_bundle: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    llm_bundle = llm_bundle or {}
 
     sorted_low = sorted(criteria_scores, key=lambda x: x.get("score", 0))
     sorted_high = sorted(criteria_scores, key=lambda x: x.get("score", 0), reverse=True)
-    strengths, improvements, top_actions = _build_deck_strengths_improvements_llm(
-        criteria_scores, total_score, strategy, gemini
-    )
+    strengths = [
+        str(s).strip() for s in llm_bundle.get("strengths", []) if str(s).strip()
+    ][:3]
+    improvements = [
+        str(s).strip() for s in llm_bundle.get("improvements", []) if str(s).strip()
+    ][:3]
+    top_actions = [
+        str(s).strip() for s in llm_bundle.get("top_actions", []) if str(s).strip()
+    ][:3]
     if not strengths:
         strengths = _build_deck_strengths(sorted_high)
     if not improvements:
@@ -1549,7 +1920,9 @@ def _build_deck_score(
             else:
                 top_actions.append(f"{c['criteria_name']}: 핵심 근거 슬라이드 수치를 강화하세요.")
 
-    structure_summary = _build_structure_summary(criteria_scores, strategy, gemini)
+    structure_summary = str(llm_bundle.get("structure_summary", "")).strip()
+    if not structure_summary:
+        structure_summary = "문제-해결-시장-실행계획의 기본 흐름은 유지되었지만, 낮은 점수 항목의 근거를 보강하면 설득력이 개선됩니다."
     return {
         "total_score": max(0, min(100, total_score)),
         "max_score": 100,
@@ -1590,57 +1963,6 @@ def _apply_group_score_floor(
 
     merged = sorted(set((related_slides or []) + candidate_slides[:2]))
     return rule["floor"], merged, rule["message"]
-
-
-def _build_deck_strengths_improvements_llm(
-    criteria_scores: List[Dict[str, Any]],
-    total_score: int,
-    strategy: Optional[Dict[str, Any]],
-    gemini: GeminiJSONClient,
-) -> Tuple[List[str], List[str], List[str]]:
-    """LLM 기반으로 덱 전체의 강점/개선점/핵심 액션을 생성."""
-    if not gemini or not getattr(gemini, "model", None):
-        return [], [], []
-    try:
-        criteria_info = [
-            {
-                "name": c["criteria_name"],
-                "score": c["score"],
-                "coverage": c.get("coverage_status"),
-                "feedback": (c.get("feedback", "") or "")[:150],
-                "related_slides": c.get("related_slides", []),
-                "missing": [m.get("item_name", "") for m in c.get("missing_items", [])],
-            }
-            for c in criteria_scores
-        ]
-        prompt = json.dumps({
-            "instruction": (
-                "IR 피치덱 분석 결과를 바탕으로 강점/개선점/핵심 액션을 작성하세요. JSON만 반환.\n\n"
-                "## 규칙\n"
-                "- strengths: 이 덱이 투자자에게 매력적인 이유 2~3개. 구체적 내용 언급 필수.\n"
-                "- improvements: 덱의 설득력을 높이기 위해 반드시 보완해야 할 점 2~3개. 구체적이고 실행 가능한 조언.\n"
-                "- top_actions: 즉시 실행할 수 있는 개선 액션 2~3개 (1문장씩, '~하세요' 형태).\n"
-                "- 모든 내용은 실제 분석 데이터에 기반해야 하며, 일반적인 조언은 금지.\n"
-                "- 슬라이드 번호를 포함하여 구체성을 높이세요."
-            ),
-            "total_score": total_score,
-            "pitch_type": (strategy or {}).get("type", "VC_DEMO"),
-            "criteria": criteria_info,
-            "output_format": {
-                "strengths": ["강점1", "강점2"],
-                "improvements": ["개선점1", "개선점2"],
-                "top_actions": ["액션1", "액션2"],
-            },
-        }, ensure_ascii=False)
-        out = gemini.generate_json(prompt, temperature=0.2)
-        strengths = [str(s).strip() for s in out.get("strengths", []) if str(s).strip()][:3]
-        improvements = [str(s).strip() for s in out.get("improvements", []) if str(s).strip()][:3]
-        top_actions = [str(s).strip() for s in out.get("top_actions", []) if str(s).strip()][:3]
-        if strengths and improvements:
-            return strengths, improvements, top_actions
-    except Exception:
-        pass
-    return [], [], []
 
 
 def _build_deck_strengths(criteria_scores: List[Dict[str, Any]]) -> List[str]:
@@ -1711,36 +2033,13 @@ def _criterion_improvement_message(criterion: Dict[str, Any]) -> str:
     return ""
 
 
-def _build_structure_summary(
-    criteria_scores: List[Dict[str, Any]],
-    strategy: Optional[Dict[str, Any]],
-    gemini: GeminiJSONClient,
-) -> str:
-    if gemini.model:
-        try:
-            payload = {
-                "strategy": strategy or {},
-                "criteria_scores": [
-                    {"name": c["criteria_name"], "score": c["score"], "feedback": c["feedback"]} for c in criteria_scores
-                ],
-                "instruction": "IR 덱 구조 총평을 3~4문장으로 작성. JSON만 반환.",
-                "output_format": {"summary": "..."},
-            }
-            out = gemini.generate_json(json.dumps(payload, ensure_ascii=False), temperature=0.2)
-            summary = str(out.get("summary", "")).strip()
-            if summary:
-                return summary
-        except Exception:
-            pass
-    return "문제-해결-시장-실행계획의 기본 흐름은 유지되었지만, 낮은 점수 항목의 근거를 보강하면 설득력이 개선됩니다."
-
-
 def _build_presentation_guide(
     slides: List[Dict[str, Any]],
     criteria_scores: List[Dict[str, Any]],
     strategy: Optional[Dict[str, Any]],
-    gemini: Optional[Any] = None,
+    llm_bundle: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    llm_bundle = llm_bundle or {}
     low_criteria = sorted(criteria_scores, key=lambda x: x.get("score", 0))[:2]
     emphasized = []
     seen = set()
@@ -1759,45 +2058,14 @@ def _build_presentation_guide(
         emphasized = [{"slide_number": 1, "reason": "오프닝 메시지를 명확히 제시하세요."}]
 
     pitch_hint = str((strategy or {}).get("type", "VC_DEMO"))
-    total_slides = len(slides)
-
-    # LLM 기반 가이드 생성 시도
-    guide = None
-    time_allocation = None
-    if gemini and getattr(gemini, "model", None) and os.getenv("IR_FAST_MODE") != "1":
-        try:
-            slide_overview = [
-                {"num": s["slide_number"], "cat": s.get("category", "OTHER"), "summary": (s.get("short_summary", "") or "")[:60]}
-                for s in slides
-            ]
-            scores_overview = [
-                {"name": c["criteria_name"], "score": c["score"]}
-                for c in criteria_scores
-            ]
-            prompt = json.dumps({
-                "instruction": (
-                    "IR 피치덱 발표 가이드를 작성하세요. JSON만 반환.\n"
-                    "guide: 발표 전략 조언 3~5개 (슬라이드 구성에 맞춤, 구체적으로)\n"
-                    "time_allocation: 발표 시간 배분 (오프닝/본론 세부/클로징)"
-                ),
-                "pitch_type": pitch_hint,
-                "total_slides": total_slides,
-                "slides": slide_overview,
-                "criteria_scores": scores_overview,
-                "output_format": {
-                    "guide": ["발표 조언1", "발표 조언2"],
-                    "time_allocation": ["오프닝 (1분): 설명", "본론 (6분): 설명", "클로징 (1분): 설명"],
-                },
-            }, ensure_ascii=False)
-            out = gemini.generate_json(prompt, temperature=0.3)
-            g = out.get("guide", [])
-            ta = out.get("time_allocation", [])
-            if isinstance(g, list) and len(g) >= 2:
-                guide = [str(x).strip() for x in g if str(x).strip()][:5]
-            if isinstance(ta, list) and len(ta) >= 2:
-                time_allocation = [str(x).strip() for x in ta if str(x).strip()]
-        except Exception:
-            pass
+    guide = [
+        str(x).strip() for x in llm_bundle.get("guide", []) if str(x).strip()
+    ][:5]
+    time_allocation = [
+        str(x).strip()
+        for x in llm_bundle.get("time_allocation", [])
+        if str(x).strip()
+    ]
 
     if not guide:
         guide = [
@@ -1866,6 +2134,52 @@ def _build_dynamic_time_allocation(
     ]
 
 
+def _build_slide_thumbnail_urls(
+    source_pdf_path: Optional[str],
+    deck_id: str,
+    slide_numbers: List[int],
+) -> Dict[int, str]:
+    if not source_pdf_path:
+        return {}
+
+    adapter = S3Adapter()
+    if not adapter.enabled:
+        return {}
+
+    try:
+        dpi = max(50, int(os.getenv("THUMBNAIL_DPI", "96")))
+        max_width = max(200, int(os.getenv("THUMBNAIL_MAX_WIDTH", "640")))
+        pages = convert_from_path(source_pdf_path, dpi=dpi, fmt="jpeg")
+    except Exception:
+        return {}
+
+    urls: Dict[int, str] = {}
+    unique_slide_numbers = sorted({n for n in slide_numbers if n > 0})
+    for slide_number in unique_slide_numbers:
+        page_index = slide_number - 1
+        if page_index >= len(pages):
+            continue
+        try:
+            image = pages[page_index].convert("RGB")
+            if image.width > max_width:
+                resize_ratio = max_width / float(image.width)
+                resized_height = max(1, int(image.height * resize_ratio))
+                image = image.resize((max_width, resized_height))
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=82, optimize=True)
+            url = adapter.upload_slide_thumbnail(
+                deck_id=deck_id,
+                slide_number=slide_number,
+                image_bytes=buffer.getvalue(),
+                content_type="image/jpeg",
+            )
+            if url:
+                urls[slide_number] = url
+        except Exception:
+            continue
+    return urls
+
+
 def _llm_score_slides(
     slides: List[Dict[str, Any]],
     criteria_scores: List[Dict[str, Any]],
@@ -1874,6 +2188,7 @@ def _llm_score_slides(
 ) -> Dict[int, int]:
     """LLM에게 슬라이드별 점수(0~100)를 요청하여 변별력 있는 점수 산출."""
     try:
+        print("   - slide_cards: LLM 슬라이드 점수 생성")
         slide_info = []
         for s in slides:
             sn = s["slide_number"]
@@ -1924,7 +2239,12 @@ def _llm_score_slides(
     return {}
 
 
-def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[str, Any]], gemini: Optional[Any] = None) -> List[Dict[str, Any]]:
+def _build_slide_cards(
+    slides: List[Dict[str, Any]],
+    criteria_scores: List[Dict[str, Any]],
+    gemini: Optional[Any] = None,
+    thumbnail_urls: Optional[Dict[int, str]] = None,
+) -> List[Dict[str, Any]]:
     score_by_slide: Dict[int, List[int]] = {}
     criteria_by_slide: Dict[int, List[str]] = {}
     for c in criteria_scores:
@@ -1938,7 +2258,7 @@ def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[
     else:
         slide_scores = None
 
-    out = []
+    slide_metrics: List[Dict[str, Any]] = []
     for slide in slides:
         sn = slide["slide_number"]
         linked_scores = score_by_slide.get(sn, [])
@@ -1989,20 +2309,37 @@ def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[
 
             if slide["text_deficiency_flag"]:
                 base = min(base, 40)
-        detail = _slide_feedback(
+
+        slide_metrics.append(
+            {
+                "slide": slide,
+                "score": max(0, min(100, base)),
+                "matched_criteria": sorted(set(criteria_by_slide.get(sn, []))),
+                "numeric_count": numbers,
+            }
+        )
+
+    feedback_by_slide = _build_slide_feedback_batch(slide_metrics, gemini)
+
+    print("   - slide_cards: 카드 조립")
+    thumbnail_urls = thumbnail_urls or {}
+    out = []
+    for item in slide_metrics:
+        slide = item["slide"]
+        sn = slide["slide_number"]
+        detail = feedback_by_slide.get(sn) or _slide_feedback(
             slide=slide,
-            score=max(0, min(100, base)),
-            matched_criteria=sorted(set(criteria_by_slide.get(sn, []))),
-            numeric_count=numbers,
-            gemini=gemini,
+            score=item["score"],
+            matched_criteria=item["matched_criteria"],
+            numeric_count=item["numeric_count"],
         )
         out.append(
             {
                 "slide_id": f"slide-{sn}",
                 "slide_number": sn,
                 "category": slide["category"],
-                "score": max(0, min(100, base)),
-                "thumbnail_url": None,
+                "score": item["score"],
+                "thumbnail_url": thumbnail_urls.get(sn),
                 "content": slide["short_summary"],
                 "display_order": sn,
                 "feedback": detail,
@@ -2011,22 +2348,26 @@ def _build_slide_cards(slides: List[Dict[str, Any]], criteria_scores: List[Dict[
     return out
 
 
-def _slide_feedback(
-    slide: Dict[str, Any],
-    score: int,
-    matched_criteria: List[str],
-    numeric_count: int,
+def _build_slide_feedback_batch(
+    slide_metrics: List[Dict[str, Any]],
     gemini: Optional[Any] = None,
-) -> Dict[str, Any]:
-    # LLM 기반 피드백 시도
-    if gemini and getattr(gemini, "model", None) and os.getenv("IR_FAST_MODE") != "1":
-        try:
-            cat = slide.get("category", "OTHER")
-            summary = (slide.get("short_summary", "") or "")[:300]
-            text_len = len(slide.get("clean_text", "") or "")
-            num_claims = len(slide.get("key_claims", []))
+) -> Dict[int, Dict[str, Any]]:
+    if (
+        not gemini
+        or not getattr(gemini, "model", None)
+        or os.getenv("IR_FAST_MODE") == "1"
+        or not slide_metrics
+    ):
+        return {}
 
-            # 텍스트 밀도 분석 정보
+    batch_size = max(1, int(os.getenv("IR_SLIDE_FEEDBACK_BATCH_SIZE", "6")))
+    feedback_by_slide: Dict[int, Dict[str, Any]] = {}
+
+    def _to_payload(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        payload: List[Dict[str, Any]] = []
+        for item in items:
+            slide = item["slide"]
+            text_len = len(slide.get("clean_text", "") or "")
             if text_len > 1000:
                 density_hint = f"텍스트 매우 많음({text_len}자) - 정보 과부하 가능성"
             elif text_len > 600:
@@ -2037,65 +2378,112 @@ def _slide_feedback(
                 density_hint = f"텍스트 적음({text_len}자) - 비주얼 중심 슬라이드"
             else:
                 density_hint = f"텍스트 적정({text_len}자)"
-
-            prompt = (
-                "IR 피치덱 슬라이드의 피드백을 JSON으로 작성하세요.\n"
-                "투자자 대상 발표 자료(IR Deck)라는 점을 반드시 고려하세요.\n\n"
-                f"슬라이드 번호: {slide['slide_number']}\n"
-                f"카테고리: {cat}\n"
-                f"점수: {score}/100\n"
-                f"요약: {summary}\n"
-                f"텍스트 밀도: {density_hint}\n"
-                f"수치 정보 개수: {numeric_count}개\n"
-                f"핵심 주장 수: {num_claims}개\n"
-                f"관련 평가 기준: {', '.join(matched_criteria[:3]) if matched_criteria else '없음'}\n\n"
-                "## 피드백 규칙\n"
-                f"- 이 슬라이드는 '{cat}' 유형입니다. 해당 유형에 맞는 구체적 피드백을 작성하세요.\n"
-                "- strengths: 이 슬라이드가 잘한 점 (구체적으로, 2~3개)\n"
-                "- improvements: 개선이 필요한 점 (구체적으로, 2~3개)\n"
-                "- detailed_feedback: 3~4문장으로 종합 피드백 (내용 + 구성/디자인 모두 포함)\n"
-                "- 모든 피드백은 해당 슬라이드 내용에 특화되어야 합니다\n"
-                "- 일반적/반복적 문구 사용 금지\n\n"
-                "## A. 내용(Content) 평가 포인트:\n"
-                "- PROBLEM: 문제의 구체성, 타겟 고객 명시, 데이터/사례 근거\n"
-                "- SOLUTION: 해결책 명확성, 차별점, 기능-문제 매핑\n"
-                "- PRODUCT: 데모/화면 명확성, 사용 흐름, UX\n"
-                "- MARKET: TAM/SAM/SOM 논리, 출처, 성장률 근거\n"
-                "- BUSINESS_MODEL: 수익 구조, 가격 정책, 단위 경제학\n"
-                "- TRACTION: 지표의 구체성, 시계열 추세, 고객 검증\n"
-                "- COMPETITION: 비교 기준 적절성, 차별점 명확성\n"
-                "- TEAM: 역할/경력 적합성, 실행 역량 근거\n"
-                "- FINANCE: 자금 배분 합리성, 마일스톤 연계\n"
-                "- ASK/GTM: 실행 계획 구체성, 목표 수치\n\n"
-                "## B. IR 덱 구성/디자인 평가 포인트 (반드시 1개 이상 피드백에 반영):\n"
-                "- **한 슬라이드 = 한 메시지 원칙**: 핵심 메시지가 하나로 명확한지, 여러 주제가 혼재되지 않았는지\n"
-                "- **텍스트 밀도**: 투자자가 3초 안에 핵심을 파악할 수 있는 분량인지 (이상적: 제목 1줄 + 본문 3~5줄 + 시각자료)\n"
-                "- **시각 자료 활용**: 숫자가 많다면 차트/그래프로 표현했는지, 텍스트만 나열하지 않았는지\n"
-                "- **정보 계층 구조**: 제목→소제목→본문→수치 순으로 시선 흐름이 자연스러운지\n"
-                "- **슬라이드 위치 적절성**: 이 카테고리의 슬라이드가 덱 전체 흐름에서 적절한 위치에 있는지\n"
-                "  (이상적 흐름: COVER→PROBLEM→SOLUTION→PRODUCT→MARKET→BM→TRACTION→COMPETITION→TEAM→FINANCE→ASK)\n"
-                "- **COVER 슬라이드**: 회사명/로고, 한 줄 태그라인, 산업/카테고리가 즉시 파악 가능한지\n"
-                "- **데이터 시각화**: 시장 규모나 실적 수치를 표/차트 없이 텍스트로만 나열하고 있지 않은지\n\n"
-                "출력: {\"detailed_feedback\":\"...\",\"strengths\":[\"...\"],\"improvements\":[\"...\"]}"
+            payload.append(
+                {
+                    "slide_number": slide["slide_number"],
+                    "category": slide.get("category", "OTHER"),
+                    "score": item["score"],
+                    "summary": (slide.get("short_summary", "") or "")[:280],
+                    "text_density": density_hint,
+                    "numeric_count": item["numeric_count"],
+                    "num_claims": len(slide.get("key_claims", [])),
+                    "matched_criteria": item["matched_criteria"][:3],
+                }
             )
-            out = gemini.generate_json(prompt, temperature=0.2)
-            detailed = str(out.get("detailed_feedback", "")).strip()
-            s = out.get("strengths", [])
-            imp = out.get("improvements", [])
-            if detailed and isinstance(s, list) and isinstance(imp, list):
+        return payload
+
+    def _request(payload: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+        prompt = json.dumps(
+            {
+                "instruction": (
+                    "IR 피치덱 슬라이드 피드백을 배치로 작성하세요. JSON만 반환.\n"
+                    "- slides 배열의 각 항목에 대해 detailed_feedback, strengths, improvements를 작성\n"
+                    "- detailed_feedback은 3~4문장\n"
+                    "- strengths/improvements는 각각 2~3개\n"
+                    "- 투자자 관점, 슬라이드 내용, 구성/디자인 관점을 모두 반영\n"
+                    "- 일반론 금지, 각 슬라이드에 특화된 내용만 작성"
+                ),
+                "slides": payload,
+                "output_format": {
+                    "slides": [
+                        {
+                            "slide_number": 1,
+                            "detailed_feedback": "피드백",
+                            "strengths": ["강점1", "강점2"],
+                            "improvements": ["개선1", "개선2"],
+                        }
+                    ]
+                },
+            },
+            ensure_ascii=False,
+        )
+        out = gemini.generate_json(prompt, temperature=0.2)
+        rows = out.get("slides", []) if isinstance(out, dict) else []
+        parsed: Dict[int, Dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            slide_number = int(row.get("slide_number", 0) or 0)
+            detailed = str(row.get("detailed_feedback", "")).strip()
+            strengths = row.get("strengths", [])
+            improvements = row.get("improvements", [])
+            if (
+                slide_number > 0
+                and detailed
+                and isinstance(strengths, list)
+                and isinstance(improvements, list)
+            ):
                 strength_list, improvement_list = _sanitize_feedback_lists(
-                    [str(x).strip() for x in s if str(x).strip()],
-                    [str(x).strip() for x in imp if str(x).strip()],
+                    [str(x).strip() for x in strengths if str(x).strip()],
+                    [str(x).strip() for x in improvements if str(x).strip()],
                 )
-                return {
+                parsed[slide_number] = {
                     "detailed_feedback": detailed,
                     "strengths": strength_list[:3],
                     "improvements": improvement_list[:3],
                 }
+        return parsed
+
+    # 1) Single-call first: 호출 수를 줄여 병목 완화.
+    use_single = os.getenv("IR_SLIDE_FEEDBACK_SINGLE_CALL", "1") == "1"
+    if use_single:
+        try:
+            print(f"   - slide_cards: LLM 피드백 단일 호출 생성 1-{len(slide_metrics)}/{len(slide_metrics)}")
+            feedback_by_slide.update(_request(_to_payload(slide_metrics)))
         except Exception:
             pass
 
-    # Fallback: 규칙 기반
+    # 2) 누락된 슬라이드만 배치 재시도.
+    missing_numbers = {
+        int(item["slide"]["slide_number"])
+        for item in slide_metrics
+        if int(item["slide"]["slide_number"]) not in feedback_by_slide
+    }
+    if not missing_numbers:
+        return feedback_by_slide
+
+    for start in range(0, len(slide_metrics), batch_size):
+        batch = slide_metrics[start : start + batch_size]
+        batch = [item for item in batch if int(item["slide"]["slide_number"]) in missing_numbers]
+        if not batch:
+            continue
+        try:
+            print(
+                f"   - slide_cards: LLM 피드백 배치 생성 {start + 1}-{start + len(batch)}/{len(slide_metrics)}"
+            )
+            feedback_by_slide.update(_request(_to_payload(batch)))
+        except Exception:
+            continue
+
+    return feedback_by_slide
+
+
+def _slide_feedback(
+    slide: Dict[str, Any],
+    score: int,
+    matched_criteria: List[str],
+    numeric_count: int,
+) -> Dict[str, Any]:
     strengths = []
     improvements = []
     text_len = len(slide.get("clean_text", "") or "")
