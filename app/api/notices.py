@@ -275,6 +275,22 @@ def _format_additional_criteria(items: list[dict]) -> str | None:
     return None
 
 
+def _append_additional_criteria_to_guide(
+    guide: str | None,
+    additional_items: list[dict],
+) -> str | None:
+    formatted = _format_additional_criteria(additional_items)
+    base = (guide or "").strip()
+    if not formatted:
+        return base or None
+    extra_line = f"[가산점 항목] {formatted}"
+    if not base:
+        return extra_line
+    if "[가산점 항목]" in base:
+        return base
+    return f"{base}\n\n{extra_line}"
+
+
 def _next_notice_version(pitch_id: str) -> int:
     ids = _NOTICE_IDS_BY_PITCH.get(pitch_id, [])
     if not ids:
@@ -307,7 +323,8 @@ def _run_notice_analysis_background(notice_id: str, pdf_path: Path) -> None:
             row.extraction_confidence = float(analysis.get("extraction_confidence", 0)) if isinstance(analysis, dict) else None
             raw_ac = analysis.get("additional_criteria") if isinstance(analysis, dict) else []
             row.additional_criteria = raw_ac if isinstance(raw_ac, list) else []
-            row.ir_deck_guide = (analysis.get("ir_deck_guide") or None) if isinstance(analysis, dict) else None
+            raw_guide = (analysis.get("ir_deck_guide") or None) if isinstance(analysis, dict) else None
+            row.ir_deck_guide = _append_additional_criteria_to_guide(raw_guide, row.additional_criteria)
             criteria = analysis.get("evaluation_criteria") if isinstance(analysis, dict) else None
             if isinstance(criteria, list):
                 pitch_type = _infer_pitch_type(row.recruitment_type, row.pitch_type)
@@ -490,6 +507,7 @@ def patch_notice(notice_id: str, payload: NoticeUpdateRequest):
                 notice_id,
             )
             row.ir_deck_guide = "수정된 기준 반영 IR Deck 가이드..."
+        row.ir_deck_guide = _append_additional_criteria_to_guide(row.ir_deck_guide, row.additional_criteria)
 
         row.analysis_status = NoticeAnalysisStatus.COMPLETED
         row.updated_at = _now()

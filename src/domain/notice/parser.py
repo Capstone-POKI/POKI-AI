@@ -171,10 +171,28 @@ def normalize_notice_result(
     if bonus_items and not normalized.get("additional_criteria"):
         normalized["additional_criteria"] = bonus_items
 
+    table_criteria, table_bonus_items = _extract_evaluation_criteria_from_tables(tables or [])
+    if table_criteria and _should_use_table_criteria(
+        current_criteria=normalized["evaluation_criteria"],
+        table_criteria=table_criteria,
+    ):
+        normalized["evaluation_criteria"] = _prefer_table_criteria(
+            normalized["evaluation_criteria"],
+            table_criteria,
+        )
+    if table_bonus_items:
+        normalized["additional_criteria"] = _merge_additional_criteria(
+            normalized.get("additional_criteria", []),
+            table_bonus_items,
+        )
+
     normalized["evaluation_criteria"] = _apply_even_point_distribution_if_needed(
         normalized["evaluation_criteria"],
         tables or [],
         notice_text,
+    )
+    normalized["evaluation_criteria"] = _sanitize_evaluation_criteria(
+        normalized["evaluation_criteria"],
     )
 
     # Fallback: extract 우대사항 from tables/text if still empty
@@ -487,7 +505,7 @@ def _row_matches_criteria(row: List[Any], normalized_criteria: str) -> bool:
 
 
 def _is_total_text(text: str) -> bool:
-    lowered = _to_str(text).replace(" ", "").lower()
+    lowered = re.sub(r"[^0-9a-z가-힣]", "", _to_str(text).lower())
     return any(token in lowered for token in ["총점", "합계", "총합", "total", "sum"])
 
 
@@ -736,3 +754,305 @@ def _extract_additional_criteria_from_sources(
                 return parsed
 
     return []
+
+
+def _extract_evaluation_criteria_from_tables(
+    tables: List[Dict[str, Any]],
+) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
+    best_eval: list[Dict[str, Any]] = []
+    best_bonus: list[Dict[str, Any]] = []
+    best_score = -1.0
+
+    for table in tables:
+        rows = table.get("rows", [])
+        if not isinstance(rows, list):
+            continue
+        if not _table_looks_like_evaluation_table(rows):
+            continue
+
+        eval_rows: list[Dict[str, Any]] = []
+        bonus_rows: list[Dict[str, Any]] = []
+        seen_names: set[str] = set()
+
+        for row in rows:
+            parsed = _extract_criterion_from_row(row)
+            if parsed is None:
+                continue
+            name, points, source_reference, is_bonus = parsed
+            name_key = _normalize_text(name)
+            if not name_key or name_key in seen_names:
+                continue
+            seen_names.add(name_key)
+
+            if is_bonus:
+                bonus_rows.append({"item": name, "points": int(points)})
+            else:
+                eval_rows.append(
+                    {
+                        "criteria_name": name,
+                        "points": int(points),
+                        "source_reference": source_reference,
+                        "sub_requirements": [],
+                        "pitchcoach_interpretation": "",
+                        "ir_guide": "",
+                    }
+                )
+
+        score = _score_table_criteria(eval_rows)
+        if score > best_score:
+            best_score = score
+            best_eval = eval_rows
+            best_bonus = bonus_rows
+
+    return best_eval, best_bonus
+
+
+def _extract_criterion_from_row(
+    row: Any,
+) -> Optional[tuple[str, int, str, bool]]:
+    if not isinstance(row, list):
+        return None
+
+    cells = [_to_str(cell) for cell in row if _to_str(cell)]
+    if not cells:
+        return None
+
+    row_text = " | ".join(cells)
+    normalized_row = row_text.replace(" ", "")
+    if _is_total_text(row_text):
+        return None
+
+    points: Optional[float] = None
+    points_cell_index = -1
+    for idx, cell in enumerate(cells):
+        point_value = _extract_points_from_text(cell)
+        if isinstance(point_value, (int, float)) and point_value > 0:
+            points = float(point_value)
+            points_cell_index = idx
+            break
+    if points is None:
+        return None
+
+    name = ""
+    for idx, cell in enumerate(cells):
+        if idx == points_cell_index:
+            continue
+        if _extract_points_from_text(cell) is not None:
+            continue
+        cleaned = _cleanup_criteria_name(cell)
+        if cleaned and not _is_header_like(cleaned):
+            name = cleaned
+            break
+    if not name:
+        cleaned = _cleanup_criteria_name(row_text)
+        if cleaned and not _is_header_like(cleaned):
+            name = cleaned
+    if not name:
+        return None
+
+    bonus_tokens = ["우대", "가산", "가점", "추가배점", "우대사항", "우대점수"]
+    non_eval_tokens = ["참여율", "출석", "자격", "제출", "접수", "의무"]
+
+    is_bonus = any(token in normalized_row for token in bonus_tokens) or any(
+        token in _normalize_text(name) for token in bonus_tokens
+    )
+    if not is_bonus and any(token in normalized_row for token in non_eval_tokens):
+        return None
+
+    return name, int(round(points)), row_text, is_bonus
+
+
+def _cleanup_criteria_name(text: str) -> str:
+    cleaned = _to_str(text)
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\([^)]*\d+(?:\.\d+)?\s*(?:점|%)\s*[^)]*\)", "", cleaned)
+    cleaned = re.sub(r"\d+(?:\.\d+)?\s*(?:점|%)", "", cleaned)
+    cleaned = re.sub(r"[/|:·•\-]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def _is_header_like(name: str) -> bool:
+    normalized = _normalize_text(name)
+    header_tokens = {
+        "평가항목",
+        "심사항목",
+        "심사기준",
+        "세부기준",
+        "항목",
+        "배점",
+        "점수",
+        "내용",
+        "비고",
+    }
+    return normalized in header_tokens
+
+
+def _score_table_criteria(criteria_rows: List[Dict[str, Any]]) -> float:
+    if len(criteria_rows) < 2:
+        return -1.0
+    total = sum(int(row.get("points", 0)) for row in criteria_rows)
+    score = 0.0
+    if 2 <= len(criteria_rows) <= 8:
+        score += 2.0
+    if 80 <= total <= 120:
+        score += 2.0
+    if all(0 < int(row.get("points", 0)) <= 100 for row in criteria_rows):
+        score += 1.0
+    score += min(len(criteria_rows), 8) * 0.05
+    return score
+
+
+def _table_looks_like_evaluation_table(rows: List[Any]) -> bool:
+    preview = " ".join(
+        " ".join(_to_str(cell) for cell in row) if isinstance(row, list) else ""
+        for row in rows[:4]
+    )
+    normalized = preview.replace(" ", "")
+    keywords = ["평가", "심사", "배점", "항목", "기준", "점수", "만점"]
+    return any(k in normalized for k in keywords)
+
+
+def _criteria_points_sum(criteria_rows: List[Dict[str, Any]]) -> int:
+    return sum(int(_to_number(row.get("points")) or 0) for row in criteria_rows if isinstance(row, dict))
+
+
+def _is_reliable_table_criteria(criteria_rows: List[Dict[str, Any]]) -> bool:
+    count = len(criteria_rows)
+    total = _criteria_points_sum(criteria_rows)
+    if count < 2:
+        return False
+    if 95 <= total <= 105:
+        return True
+    if count >= 3 and 90 <= total <= 110:
+        return True
+    return False
+
+
+def _should_use_table_criteria(
+    current_criteria: List[Dict[str, Any]],
+    table_criteria: List[Dict[str, Any]],
+) -> bool:
+    if _is_reliable_table_criteria(table_criteria):
+        return True
+    if not current_criteria:
+        return True
+    current_sum = _criteria_points_sum(current_criteria)
+    if current_sum <= 0:
+        return True
+    # 현재 결과가 100점 정합성을 만족하면 테이블이 불확실할 때 덮어쓰지 않음
+    return not (95 <= current_sum <= 105)
+
+
+def _prefer_table_criteria(
+    llm_criteria: List[Dict[str, Any]],
+    table_criteria: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    llm_index: Dict[str, Dict[str, Any]] = {}
+    for item in llm_criteria:
+        if not isinstance(item, dict):
+            continue
+        name = _to_str(item.get("criteria_name"))
+        if not name:
+            continue
+        aliases = _criteria_aliases(name) or [name]
+        for alias in aliases:
+            key = _normalize_text(alias)
+            if key and key not in llm_index:
+                llm_index[key] = item
+
+    merged: List[Dict[str, Any]] = []
+    for t_item in table_criteria:
+        name = _to_str(t_item.get("criteria_name"))
+        matched: Optional[Dict[str, Any]] = None
+        for alias in _criteria_aliases(name) or [name]:
+            matched = llm_index.get(_normalize_text(alias))
+            if matched:
+                break
+        merged.append(
+            {
+                "criteria_name": name,
+                "points": int(_to_number(t_item.get("points")) or 0),
+                "source_reference": _to_str(t_item.get("source_reference")),
+                "sub_requirements": _to_str_list((matched or {}).get("sub_requirements")),
+                "pitchcoach_interpretation": _to_str((matched or {}).get("pitchcoach_interpretation")),
+                "ir_guide": _to_str((matched or {}).get("ir_guide")),
+            }
+        )
+    return merged
+
+
+def _merge_additional_criteria(
+    current_items: Any,
+    new_items: Any,
+) -> List[Dict[str, Any]]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for raw in list(current_items or []) + list(new_items or []):
+        if not isinstance(raw, dict):
+            continue
+        item = _to_str(raw.get("item"))
+        points = int(_to_number(raw.get("points")) or 0)
+        key = _normalize_text(item)
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = {"item": item, "points": points}
+    return list(merged.values())
+
+
+def _sanitize_evaluation_criteria(criteria: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    cleaned: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in criteria:
+        if not isinstance(row, dict):
+            continue
+        name = _to_str(row.get("criteria_name"))
+        if not name or _is_total_text(name):
+            continue
+        key = _normalize_text(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        copied = dict(row)
+        copied["points"] = int(_to_number(copied.get("points")) or 0)
+        cleaned.append(copied)
+
+    if len(cleaned) < 2:
+        return cleaned
+
+    if any(int(row.get("points", 0)) > 0 for row in cleaned):
+        cleaned = [row for row in cleaned if int(row.get("points", 0)) > 0]
+        if len(cleaned) < 2:
+            return cleaned
+
+    total = _criteria_points_sum(cleaned)
+    if total <= 110:
+        return cleaned
+
+    # 명백한 총점성 항목(100점 단일 행 등) 제거
+    high_filtered = [r for r in cleaned if int(r.get("points", 0)) < 90]
+    if len(high_filtered) >= 2:
+        high_total = _criteria_points_sum(high_filtered)
+        if abs(high_total - 100) < abs(total - 100):
+            cleaned, total = high_filtered, high_total
+
+    # 상/하위 항목 중복 합산으로 총점이 과도할 때 100점 근사화
+    while len(cleaned) >= 3 and total > 110:
+        base_delta = abs(total - 100)
+        best_idx = -1
+        best_delta = base_delta
+        for idx, row in enumerate(cleaned):
+            next_total = total - int(row.get("points", 0))
+            if next_total < 60:
+                continue
+            delta = abs(next_total - 100)
+            if delta < best_delta:
+                best_idx = idx
+                best_delta = delta
+        if best_idx < 0:
+            break
+        cleaned.pop(best_idx)
+        total = _criteria_points_sum(cleaned)
+
+    return cleaned
