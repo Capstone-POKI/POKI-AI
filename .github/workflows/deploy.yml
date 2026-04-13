@@ -33,6 +33,7 @@ jobs:
             }
 
             cleanup_port_8000
+            docker network create poki-net || true
             cd ~/Pitchcoach-AI
             git fetch origin main
             git checkout main
