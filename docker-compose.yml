@@ -8,3 +8,9 @@ services:
     volumes:
       - ./credentials:/app/credentials:ro
     restart: unless-stopped
+    networks:
+      - poki-net
+
+networks:
+  poki-net:
+    external: true

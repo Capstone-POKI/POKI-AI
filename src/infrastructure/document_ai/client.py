@@ -36,7 +36,7 @@ class DocumentAIClient:
             raw_document=raw_document,
             process_options=process_options,
         )
-        result = self.client.process_document(request=request)
+        result = self.client.process_document(request=request, timeout=60.0)
         return json.loads(documentai.Document.to_json(result.document))
 
     @staticmethod
