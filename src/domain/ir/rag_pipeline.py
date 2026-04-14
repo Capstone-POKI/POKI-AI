@@ -1807,7 +1807,7 @@ def _calculate_total_score(
     # Discrimination-friendly anchored scaling:
     # keep center near anchor while expanding/reducing spread with gain.
     anchor = float(os.getenv("IR_TOTAL_SCORE_ANCHOR", "65"))
-    gain = float(os.getenv("IR_TOTAL_SCORE_GAIN", "2.4"))
+    gain = float(os.getenv("IR_TOTAL_SCORE_GAIN", "1.0"))
     bias = float(os.getenv("IR_TOTAL_SCORE_BIAS", "0"))
     floor = int(os.getenv("IR_TOTAL_SCORE_FLOOR", "0"))
     ceiling = int(os.getenv("IR_TOTAL_SCORE_CEILING", "100"))
