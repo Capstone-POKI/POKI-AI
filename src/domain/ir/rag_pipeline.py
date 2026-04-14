@@ -7,10 +7,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from pdf2image import convert_from_path
+from PIL import Image
 
 from src.infrastructure.embedding.client import EmbeddingClient, GeminiEmbeddingClient
 from src.infrastructure.gemini.client import GeminiJSONClient
 from src.infrastructure.storage.s3_adapter import S3Adapter
+
+
+_RESAMPLING = getattr(Image, "Resampling", Image)
+THUMBNAIL_RESAMPLE_FILTER = _RESAMPLING.LANCZOS
 
 
 DEFAULT_TOP_K = 3
@@ -2147,9 +2152,14 @@ def _build_slide_thumbnail_urls(
         return {}
 
     try:
-        dpi = max(50, int(os.getenv("THUMBNAIL_DPI", "96")))
-        max_width = max(200, int(os.getenv("THUMBNAIL_MAX_WIDTH", "640")))
-        pages = convert_from_path(source_pdf_path, dpi=dpi, fmt="jpeg")
+        dpi = max(72, min(600, int(os.getenv("THUMBNAIL_DPI", "220"))))
+        max_width = max(640, min(4096, int(os.getenv("THUMBNAIL_MAX_WIDTH", "1600"))))
+        image_format = os.getenv("THUMBNAIL_FORMAT", "PNG").strip().upper()
+        if image_format not in {"PNG", "JPEG", "WEBP"}:
+            image_format = "PNG"
+        jpeg_quality = max(85, min(100, int(os.getenv("THUMBNAIL_JPEG_QUALITY", "95"))))
+        webp_quality = max(85, min(100, int(os.getenv("THUMBNAIL_WEBP_QUALITY", "95"))))
+        pages = convert_from_path(source_pdf_path, dpi=dpi)
     except Exception:
         return {}
 
@@ -2164,14 +2174,35 @@ def _build_slide_thumbnail_urls(
             if image.width > max_width:
                 resize_ratio = max_width / float(image.width)
                 resized_height = max(1, int(image.height * resize_ratio))
-                image = image.resize((max_width, resized_height))
+                image = image.resize(
+                    (max_width, resized_height),
+                    resample=THUMBNAIL_RESAMPLE_FILTER,
+                )
             buffer = BytesIO()
-            image.save(buffer, format="JPEG", quality=82, optimize=True)
+            save_kwargs: Dict[str, Any] = {"format": image_format}
+            content_type = "image/png"
+            if image_format == "JPEG":
+                content_type = "image/jpeg"
+                save_kwargs.update(
+                    {
+                        "quality": jpeg_quality,
+                        "optimize": True,
+                        # Keep text edges sharp in slide-heavy documents.
+                        "subsampling": 0,
+                    }
+                )
+            elif image_format == "WEBP":
+                content_type = "image/webp"
+                save_kwargs.update({"quality": webp_quality, "method": 6})
+            else:
+                save_kwargs.update({"optimize": True})
+
+            image.save(buffer, **save_kwargs)
             url = adapter.upload_slide_thumbnail(
                 deck_id=deck_id,
                 slide_number=slide_number,
                 image_bytes=buffer.getvalue(),
-                content_type="image/jpeg",
+                content_type=content_type,
             )
             if url:
                 urls[slide_number] = url
