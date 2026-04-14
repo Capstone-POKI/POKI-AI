@@ -48,3 +48,5 @@ jobs:
               exit 1
             fi
             docker compose up -d --build
+            # NestJS 컨테이너 네트워크에 AI 컨테이너 연결 (이미 연결된 경우 무시)
+            docker network connect --alias fastapi-ai ec2-user_default $(docker compose ps -q fastapi-ai) 2>/dev/null || true
