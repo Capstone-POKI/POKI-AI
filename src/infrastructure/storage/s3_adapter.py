@@ -45,7 +45,13 @@ class S3Adapter:
         client = self._client_or_none()
         if client is None:
             return None
-        key = f"{self.prefix}/{deck_id}/slide-{slide_number}.jpg"
+        normalized_content_type = (content_type or "image/jpeg").split(";")[0].strip().lower()
+        extension = "jpg"
+        if normalized_content_type == "image/png":
+            extension = "png"
+        elif normalized_content_type == "image/webp":
+            extension = "webp"
+        key = f"{self.prefix}/{deck_id}/slide-{slide_number}.{extension}"
         try:
             client.put_object(
                 Bucket=self.bucket,
