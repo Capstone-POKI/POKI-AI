@@ -95,9 +95,6 @@ async def generate_qa_questions(
             
             with _LOCK:
                 _QA_SESSIONS[session_id] = session
-                if pitch_id not in _SESSION_IDS_BY_PITCH:
-                    _SESSION_IDS_BY_PITCH[pitch_id] = []
-                _SESSION_IDS_BY_PITCH[pitch_id].append(session_id)
             
             print(f"✅ QA 세션 생성 완료: {session_id}")
         
