@@ -245,7 +245,7 @@ curl "http://localhost:8000/api/pitches/pitch-123/qa/sessions/session-id/answers
 - [x] FastAPI 엔드포인트
 - [x] 세션 관리
 - [ ] 데이터베이스 영속성 (현재: 메모리 기반)
-- [ ] 테스트 코드
+- [x] 테스트 코드
 - [ ] Backend 통합 테스트
 
 ## Backend 통합
