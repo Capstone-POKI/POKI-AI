@@ -217,12 +217,13 @@ async def submit_answer(
     # 백그라운드에서 답변 처리
     def evaluate_answer():
         try:
-            answer = process_answer(
-                session=session,
-                question_id=question_id,
-                audio_path=str(audio_path) if audio_path else None,
-                text_transcript=text_transcript,
-            )
+            with _LOCK:
+                answer = process_answer(
+                    session=session,
+                    question_id=question_id,
+                    audio_path=str(audio_path) if audio_path else None,
+                    text_transcript=text_transcript,
+                )
             
             if not answer:
                 print(f"❌ 답변 처리 실패: {question_id}")
