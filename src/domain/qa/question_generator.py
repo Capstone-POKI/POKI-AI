@@ -4,7 +4,7 @@ import json
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
-import google.generativeai as genai
+from google import genai
 
 from src.domain.qa.prompts import (
     QUESTION_GENERATION_SYSTEM_PROMPT,

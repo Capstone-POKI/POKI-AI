@@ -4,7 +4,7 @@ import json
 from typing import Dict, Optional
 from dataclasses import dataclass
 
-import google.generativeai as genai
+from google import genai
 
 from src.domain.qa.prompts import (
     ANSWER_EVALUATION_SYSTEM_PROMPT,
