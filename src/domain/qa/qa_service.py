@@ -200,7 +200,7 @@ def process_answer(
     )
     
     # 세션에 답변 저장
-    session.answers[question_id] = asdict(answer_response)
+    session.answers[question_id] = answer_response.model_dump(mode="json")
     
     print(f"✅ 답변 평가 완료 (점수: {final_score}/100)")
     
