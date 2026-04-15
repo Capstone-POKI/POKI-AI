@@ -8,14 +8,16 @@ from fastapi.responses import JSONResponse
 from app.api.health import router as health_router
 from app.api.decks import router as ir_router
 from app.api.notices import router as notice_router
+from app.api.voice import router as voice_router
+from app.api.qa import router as qa_router
 
 app = FastAPI(title="POKI-AI Service", version="0.1.0")
 
 app.include_router(health_router)
 app.include_router(notice_router)
 app.include_router(ir_router)
-from app.api.voice import router as voice_router
 app.include_router(voice_router)
+app.include_router(qa_router)
 
 
 @app.exception_handler(HTTPException)
