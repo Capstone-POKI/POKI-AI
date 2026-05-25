@@ -501,12 +501,14 @@ def patch_notice(notice_id: str, payload: NoticeUpdateRequest):
                 {"criteria_name": item.criteria_name, "points": item.points}
                 for item in payload.evaluation_criteria
             ]
-            _CRITERIA_BY_NOTICE_ID[notice_id] = _normalize_criteria_rows(
-                criteria_payload,
-                row.pitch_type,
-                notice_id,
-            )
-            row.ir_deck_guide = "수정된 기준 반영 IR Deck 가이드..."
+            new_criteria_rows = _normalize_criteria_rows(criteria_payload, row.pitch_type, notice_id)
+            _CRITERIA_BY_NOTICE_ID[notice_id] = new_criteria_rows
+            guide_lines = [
+                f"{r.criteria_name}({r.points}점): {r.ir_guide}"
+                for r in new_criteria_rows if r.ir_guide
+            ]
+            if guide_lines:
+                row.ir_deck_guide = "수정된 평가 기준 기반 IR Deck 준비 가이드\n\n" + "\n".join(guide_lines)
         row.ir_deck_guide = _append_additional_criteria_to_guide(row.ir_deck_guide, row.additional_criteria)
 
         row.analysis_status = NoticeAnalysisStatus.COMPLETED

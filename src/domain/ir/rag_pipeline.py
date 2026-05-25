@@ -1099,23 +1099,47 @@ def _apply_strategy_to_rubric(
 def _map_strategy_criterion_to_group(name: str) -> Optional[str]:
     normalized = name.replace(" ", "").lower()
     mapping = {
+        # Problem
         "문제정의": "PROBLEM",
         "문제인식": "PROBLEM",
+        "사회적가치": "PROBLEM",
+        # Solution
         "솔루션": "SOLUTION",
         "혁신성": "SOLUTION",
         "기술혁신성": "SOLUTION",
+        "기술성": "SOLUTION",
+        "기술력": "SOLUTION",
+        "독창성": "SOLUTION",
+        "차별성": "SOLUTION",
+        "실현가능성": "SOLUTION",
+        "아이템혁신성": "SOLUTION",
+        "아이템차별성": "SOLUTION",
+        # Market / Business Model
         "시장/비즈니스": "MARKET_BM",
         "시장비즈니스": "MARKET_BM",
         "시장": "MARKET_BM",
         "시장성": "MARKET_BM",
         "비즈니스": "MARKET_BM",
+        "사업성": "MARKET_BM",
+        "사업화가능성": "MARKET_BM",
+        "수익성": "MARKET_BM",
+        "파급효과": "MARKET_BM",
+        # Traction
         "실적": "TRACTION",
         "성장성": "TRACTION",
+        "지속가능성": "TRACTION",
+        "사업화역량": "TRACTION",
+        "성과확산": "TRACTION",
+        # Team
         "팀": "TEAM",
         "팀역량": "TEAM",
+        "팀빌딩": "TEAM",
         "창업가(팀)역량": "TEAM",
         "창업가팀역량": "TEAM",
         "창업가역량": "TEAM",
+        "창업자역량": "TEAM",
+        "창업가정신": "TEAM",
+        # Finance
         "자금계획": "FINANCE",
         "자금": "FINANCE",
     }

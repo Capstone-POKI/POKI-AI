@@ -146,7 +146,16 @@ def build_deck_context_text(deck_json: Dict[str, Any]) -> str:
 
 # [변경] 기존: str 반환 / 변경 후: (text, words) 튜플 반환
 # verbose_json + timestamp_granularities=["word"] 추가 → 슬라이드별 발화 분리에 필요
+WHISPER_MAX_BYTES = 25 * 1024 * 1024  # OpenAI Whisper API hard limit
+
+
 def transcribe_audio(path: Path) -> Tuple[str, List[Dict[str, Any]]]:
+    file_size = path.stat().st_size
+    if file_size > WHISPER_MAX_BYTES:
+        raise ValueError(
+            f"음성 파일이 너무 큽니다 ({file_size // 1024 // 1024}MB). "
+            f"OpenAI Whisper API는 최대 25MB까지 지원합니다."
+        )
     with path.open("rb") as audio_file:
         result = openai_client.audio.transcriptions.create(
             model="whisper-1",
@@ -289,8 +298,14 @@ def analyze_with_gemini(
 최종 출력 형식은 반드시 지정된 JSON 구조만 사용하세요.
 """
 
+    deck_json_str = json.dumps(deck_json, ensure_ascii=False, indent=2)
     prompt_prefix = deck_ctx + "\n\n" + audio_ctx + "\n\n"
-    final_prompt = prompt_prefix + IR_PROMPT_TEMPLATE.replace('{{$json["text"]}}', transcript_text)
+    final_prompt = (
+        prompt_prefix
+        + IR_PROMPT_TEMPLATE
+        .replace("{{deck_json}}", deck_json_str)
+        .replace('{{$json["text"]}}', transcript_text)
+    )
 
     if not gemini_client.model:
         raise RuntimeError("Gemini model is not available")
@@ -360,6 +375,11 @@ def analyze_slides_with_gemini(
     if not gemini_client.model:
         return []
     parsed = gemini_client.generate_json(prompt, temperature=0.2)
+    if isinstance(parsed, dict):
+        for key in ("slides", "result", "data", "items"):
+            if isinstance(parsed.get(key), list):
+                parsed = parsed[key]
+                break
     if not isinstance(parsed, list):
         return []
 
