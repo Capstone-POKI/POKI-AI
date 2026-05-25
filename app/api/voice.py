@@ -17,7 +17,7 @@ from src.domain.voice.whisper_adapter import (
 
 router = APIRouter(prefix="/api", tags=["voice"])
 
-MAX_VOICE_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_VOICE_FILE_SIZE = 25 * 1024 * 1024  # 25MB (OpenAI Whisper API limit)
 ALLOWED_EXTENSIONS = {".webm", ".mp3", ".m4a", ".wav", ".ogg", ".mp4"}
 VOICE_UPLOAD_DIR = Path("data/output/voice_uploads")
 
