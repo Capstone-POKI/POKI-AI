@@ -298,8 +298,14 @@ def analyze_with_gemini(
 최종 출력 형식은 반드시 지정된 JSON 구조만 사용하세요.
 """
 
+    deck_json_str = json.dumps(deck_json, ensure_ascii=False, indent=2)
     prompt_prefix = deck_ctx + "\n\n" + audio_ctx + "\n\n"
-    final_prompt = prompt_prefix + IR_PROMPT_TEMPLATE.replace('{{$json["text"]}}', transcript_text)
+    final_prompt = (
+        prompt_prefix
+        + IR_PROMPT_TEMPLATE
+        .replace("{{deck_json}}", deck_json_str)
+        .replace('{{$json["text"]}}', transcript_text)
+    )
 
     if not gemini_client.model:
         raise RuntimeError("Gemini model is not available")
