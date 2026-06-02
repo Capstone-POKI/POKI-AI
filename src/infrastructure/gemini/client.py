@@ -104,3 +104,65 @@ class GeminiJSONClient:
             "Gemini request failed: no available model for v1 generateContent. "
             f"Tried={self.model_candidates}. Last={last_error}"
         )
+
+    def generate_json_with_image(
+        self,
+        prompt: str,
+        image_path: str,
+        temperature: float = 0.1,
+    ) -> Dict[str, Any]:
+        import base64
+
+        if self.model is None or self.api_key is None or not self.model_candidates:
+            raise RuntimeError("Gemini model is not available")
+
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        ext = image_path.rsplit(".", 1)[-1].lower()
+        mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+
+        payload: Dict[str, Any] = {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"inlineData": {"mimeType": mime, "data": image_data}},
+                    {"text": prompt},
+                ],
+            }],
+            "generationConfig": {
+                "temperature": temperature,
+                "responseMimeType": "application/json",
+            },
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
+        }
+
+        last_error = ""
+        timeout_sec = float(os.getenv("GEMINI_TIMEOUT_SEC", "120"))
+        for model_name in self.model_candidates:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model_name)}:generateContent"
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout_sec)
+
+            if response.status_code in (404, 400, 429, 503):
+                last_error = f"{model_name}: {response.status_code}"
+                continue
+            if response.status_code != 200:
+                raise RuntimeError(f"Gemini vision request failed: {response.status_code}")
+
+            self.model_name = model_name
+            data = response.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                raise RuntimeError("Gemini vision response has no candidates")
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                raise RuntimeError("Gemini vision response has no parts")
+            raw = (parts[0].get("text", "") or "").replace("```json", "").replace("```", "").strip()
+            return json.loads(raw)
+
+        raise RuntimeError(
+            f"Gemini vision request failed. Tried={self.model_candidates}. Last={last_error}"
+        )

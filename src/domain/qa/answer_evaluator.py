@@ -4,7 +4,7 @@ import json
 from typing import Dict, Optional
 from dataclasses import dataclass
 
-import google.generativeai as genai
+import google.genai as genai
 
 from src.domain.qa.prompts import (
     ANSWER_EVALUATION_SYSTEM_PROMPT,
@@ -29,7 +29,7 @@ def run_answer_evaluation(
     question_content: str,
     guidance: str,
     answer_transcript: str,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-2.5-flash",
 ) -> Optional[AnswerEvaluation]:
     """
     Gemini를 사용하여 답변을 평가합니다.
@@ -57,20 +57,11 @@ def run_answer_evaluation(
     # Gemini API 호출
     response = client.models.generate_content(
         model=model_name,
-        contents=[
-            {
-                "role": "user",
-                "parts": [
-                    {"text": ANSWER_EVALUATION_SYSTEM_PROMPT},
-                    {"text": user_prompt},
-                ]
-            }
-        ],
-        generation_config={
-            "temperature": 0.3,  # 평가는 일관성이 중요하므로 낮은 온도
-            "top_p": 0.95,
-            "top_k": 40,
-        }
+        contents=ANSWER_EVALUATION_SYSTEM_PROMPT + "\n\n" + user_prompt,
+        config=genai.types.GenerateContentConfig(
+            temperature=0.3,
+            top_p=0.95,
+        ),
     )
     
     # 응답 파싱

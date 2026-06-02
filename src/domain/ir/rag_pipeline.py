@@ -18,9 +18,9 @@ _RESAMPLING = getattr(Image, "Resampling", Image)
 THUMBNAIL_RESAMPLE_FILTER = _RESAMPLING.LANCZOS
 
 
-DEFAULT_TOP_K = 3
-SIM_HIGH = 0.72
-SIM_MID = 0.60
+DEFAULT_TOP_K = 2
+SIM_HIGH = 0.58
+SIM_MID = 0.48
 DEFAULT_LLM_SLIDE_LIMIT = 50
 GROUP_CATEGORY_PRIORS = {
     "PROBLEM": {"PROBLEM", "MARKET"},
@@ -305,6 +305,17 @@ def run_rag_ir_analysis(
 
     print("🏷️ [RAG] 슬라이드 분류/요약 진행")
     _classify_and_summarize_slides(slides, gemini)
+
+    if source_pdf_path and os.getenv("USE_VISION") == "1":
+        try:
+            from src.domain.ir.vision_classifier import classify_slides_vision, apply_vision_to_slides
+            print("   👁️ [Vision] 이미지 기반 분류 적용 중...")
+            vision_results = classify_slides_vision(source_pdf_path, gemini)
+            n = apply_vision_to_slides(slides, vision_results)
+            print(f"   👁️ [Vision] {n}/{len(slides)}장 분류 오버라이드 완료")
+        except Exception as e:
+            print(f"   ⚠️ [Vision] 분류 실패, 텍스트 분류 유지: {e}")
+
     _mark_slide_validity(slides)
     valid_slides = [slide for slide in slides if slide.get("is_valid", True)]
     excluded_slides = [
@@ -588,17 +599,37 @@ def _classify_and_summarize_slides(slides: List[Dict[str, Any]], gemini: GeminiJ
                     "- PRODUCT: 제품 데모, UI/UX, 화면 설명, 기술 아키텍처\n"
                     "- MARKET: TAM/SAM/SOM, 시장 규모, 성장률, 시장 트렌드\n"
                     "- BUSINESS_MODEL: 수익 모델, 가격 정책, BM 구조\n"
-                    "- TRACTION: 실적, 매출, 사용자 지표, PoC 결과, 고객사\n"
+                    "- TRACTION: 현재까지 달성한 성과 수치. 미래 목표가 포함되어 있어도 실제 달성 이력(MAU, 매출, 계약, MOU, 앱 다운로드, 이벤트 완료 등)이 하나라도 있으면 TRACTION\n"
+                    "  [TRACTION O] '현재 MAU 3만명, 목표 10만명' → 현재 수치 있으므로 TRACTION\n"
+                    "  [TRACTION O] '앱 런칭 이벤트 완료, 다운로드 2천건' → 완료된 성과이므로 TRACTION\n"
+                    "  [TRACTION O] '대학교 MOU 40EA, 벤처기업 인증 완료' → 달성 이력 있으므로 TRACTION\n"
+                    "  [TRACTION O] '영업이익 증가 추이 그래프 + 2025 목표' → 추이(과거) 있으므로 TRACTION\n"
+                    "  [TRACTION X] '2027년까지 매출 1000억 목표만 있음' → 현재 수치 전혀 없으면 FINANCE\n"
+                    "  [TRACTION X] '베트남 시장 진입 전략 및 고객 확보 계획' → 미래 실행 계획이므로 GTM\n"
                     "- COMPETITION: 경쟁사 비교표, 차별점, 포지셔닝\n"
                     "- TEAM: 팀 구성, 멤버 경력, 조직도\n"
-                    "- FINANCE: 재무 계획, 투자 요청, 자금 사용 계획\n"
-                    "- ASK: 로드맵, 마일스톤, 향후 계획, 투자 요청\n"
-                    "- GTM: 시장 진입 전략, 초기 고객 확보, 영업 전략, 제휴 전략\n"
-                    "- OTHER: 위 어디에도 해당하지 않는 경우\n\n"
+                    "- FINANCE: 순수하게 미래 재무 계획만 있는 슬라이드. 투자금 사용처, 손익분기점 예측, 향후 매출 목표만 있고 현재 달성 수치가 전혀 없는 경우에만 FINANCE\n"
+                    "  [FINANCE O] '2026년 매출 목표 50억, BEP 달성 예정' → 미래 계획만 있으므로 FINANCE\n"
+                    "  [FINANCE O] '투자금 30억: R&D 50%, 마케팅 30%, 인건비 20%' → 자금 사용 계획만 있으므로 FINANCE\n"
+                    "  [FINANCE X] '영업이익 증가 추이 + 2025 목표' → 추이(과거 성과) 있으므로 TRACTION\n"
+                    "- ASK: 투자 요청 금액·지분 구조·자금 사용 계획이 명시된 슬라이드. 핵심 판단: '우리가 얼마를 원한다'\n"
+                    "  [ASK 긍정 예시1] '시리즈A 30억 요청, R&D 50% / 마케팅 30% / 인건비 20% 사용 계획'\n"
+                    "  [ASK 긍정 예시2] '5억 투자 시 지분 10% 제공, 18개월 런웨이 확보'\n"
+                    "  [ASK 부정 예시1] '2025→2026→2027 매출 로드맵 그래프' → 매출 목표 타임라인은 TRACTION 또는 FINANCE\n"
+                    "  [ASK 부정 예시2] 'R&D 완료 → 인증 → 글로벌 진출 마일스톤' → 실행 마일스톤은 TRACTION\n"
+                    "- GTM: 미래 고객 획득 전략, 마케팅 채널, 영업 계획, 파트너십 계획 중심. 핵심 판단: '어떻게 고객을 확보할 것인가'\n"
+                    "  [GTM 긍정 예시1] '초기 타겟: 베트남 대도시 소형 클리닉, 패스트트랙 인허가로 빠른 진입'\n"
+                    "  [GTM 긍정 예시2] '유학생 커뮤니티 채널 + 대학교 제휴 + SNS 바이럴 → 초기 1만 명 확보 계획'\n"
+                    "  [GTM 부정 예시1] 'TAM 6조, SAM 4113억, SOM 660억 시장 규모' → 시장 크기 분석이므로 MARKET\n"
+                    "  [GTM 부정 예시2] 'MOU 40개 체결 완료, 앱 론칭 이벤트 진행' → 이미 완료된 실적이므로 TRACTION\n"
+                    "- OTHER: 위 어디에도 해당하지 않는 경우 (전환 슬라이드, 영상 캡처, 감사 인사 등)\n\n"
                     "## 주의사항\n"
+                    "- TRACTION vs ASK: 과거/현재 달성 수치 → TRACTION, 미래 투자 요청 금액 → ASK\n"
+                    "- TRACTION vs GTM: 이미 체결된 파트너십/계약 → TRACTION, 앞으로 할 마케팅/영업 계획 → GTM\n"
+                    "- GTM vs MARKET: 고객 확보 전략/채널 → GTM, 시장 규모 수치(TAM/SAM/SOM) → MARKET\n"
                     "- 경쟁사 비교표가 있으면 COMPETITION (TEAM 아님)\n"
                     "- 'Business Model'이 제목에 있으면 BUSINESS_MODEL (TRACTION 아님)\n"
-                    "- 시장 진입/영업/제휴 전략은 GTM (MARKET 아님)\n"
+                    "- 로드맵/마일스톤 슬라이드: 투자금액 명시 없으면 TRACTION, 투자 요청액 명시 있으면 ASK\n"
                     "- OCR 노이즈(깨진 글자, 잘못된 띄어쓰기)는 무시하고 의미를 파악하세요\n\n"
                     "## short_summary 작성 규칙\n"
                     "- OCR 원문을 그대로 복사하지 마세요\n"
