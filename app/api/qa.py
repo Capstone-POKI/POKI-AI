@@ -96,19 +96,29 @@ def _load_questions_from_cache(pitch_id: str) -> list[dict] | None:
 
 # ==================== 질문 생성 엔드포인트 ====================
 
-@router.post("/pitches/{pitch_id}/qa/questions/generate")
+@router.post(
+    "/pitches/{pitch_id}/qa/questions/generate",
+    response_model=QASessionResponse,
+    summary="Q&A 질문 생성 (멀티에이전트)",
+    description=(
+        "공고문·IR Deck·발표 내용을 바탕으로 4-Agent 파이프라인이 투자자 관점 질문 5개를 생성합니다.\n\n"
+        "**파이프라인:**\n"
+        "1. Agent 1 — 공고문 심사 핵심 포인트 추출\n"
+        "2. Agent 2 — IR 덱 취약 클레임 추출\n"
+        "3. Agent 3 — 날카로운 질문 7개 생성\n"
+        "4. Agent 4 — 품질 검증 후 최종 5개 선별\n\n"
+        "**동기 처리** — 요청 완료 시 질문이 이미 생성된 상태로 반환됩니다.\n"
+        "생성된 질문은 파일 캐시에도 저장되어 Docker 재시작 후에도 조회 가능합니다."
+    ),
+    tags=["qa"],
+)
 async def generate_qa_questions(
     pitch_id: str,
-    notice_content: str = Form(...),
-    irdecksummary: str = Form(...),
-    presentation_content: str = Form(default=None),
+    notice_content: str = Form(..., description="공고문 전체 텍스트"),
+    irdecksummary: str = Form(..., description="IR 덱 분석 요약"),
+    presentation_content: str = Form(default=None, description="발표 내용 (선택)"),
 ) -> QASessionResponse:
-    """
-    Q&A 질문을 생성하고 새로운 세션을 시작합니다. (동기 처리)
-
-    공고문, IR Deck, 발표 내용을 바탕으로 멀티에이전트가 질문을 생성하며,
-    결과를 파일 캐시에도 저장하여 Docker 재시작 후에도 조회 가능합니다.
-    """
+    """Q&A 질문 생성 (멀티에이전트 4-Agent 파이프라인)"""
     session_id = str(uuid4())
 
     # 질문 생성 (동기 — BackgroundTasks 제거)
@@ -151,7 +161,13 @@ async def generate_qa_questions(
     return _to_qa_session_response(session)
 
 
-@router.get("/pitches/{pitch_id}/qa/sessions/{session_id}")
+@router.get(
+    "/pitches/{pitch_id}/qa/sessions/{session_id}",
+    response_model=QASessionResponse,
+    summary="QA 세션 조회",
+    description="특정 QA 세션의 질문 리스트를 조회합니다.",
+    tags=["qa"],
+)
 async def get_qa_session(
     pitch_id: str,
     session_id: str,
@@ -166,14 +182,21 @@ async def get_qa_session(
     return _to_qa_session_response(session)
 
 
-@router.get("/pitches/{pitch_id}/questions")
+@router.get(
+    "/pitches/{pitch_id}/questions",
+    summary="Q&A 질문 목록 조회 (BACK 호환)",
+    description=(
+        "BACK 서버가 폴링할 때 사용하는 엔드포인트.\n\n"
+        "메모리 세션이 없으면 파일 캐시에서 자동 복원합니다 (Docker 재시작 대비).\n\n"
+        "**응답 필드:**\n"
+        "- `questions[].type`: NOTICE | PITCHBOOK | PRESENTER | EVALUATOR\n"
+        "- `questions[].content`: 생성된 질문 텍스트\n"
+        "- `questions[].guidance`: 답변 방향 가이드"
+    ),
+    tags=["qa"],
+)
 async def get_all_qa_questions(pitch_id: str) -> dict:
-    """
-    해당 피치의 모든 Q&A 질문을 조회합니다.
-    (Backend와 호환되는 엔드포인트)
-
-    메모리 세션이 없으면 파일 캐시에서 복원합니다.
-    """
+    """Q&A 질문 목록 조회 (BACK 호환)"""
     # 1) 메모리에서 조회
     with _LOCK:
         session_ids = _SESSION_IDS_BY_PITCH.get(pitch_id, [])
