@@ -33,7 +33,7 @@ def _call_gemini(
     client: genai.Client,
     system_prompt: str,
     user_prompt: str,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-2.5-flash",
     temperature: float = 0.7,
 ) -> str:
     """Gemini API 단일 호출 헬퍼"""
@@ -253,7 +253,7 @@ def run_question_generation(
     notice_content: str,
     irdecksummary: str,
     presentation_content: Optional[str] = None,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-2.5-flash",
 ) -> List[QuestionItem]:
     """
     멀티에이전트 방식으로 Q&A 질문을 생성합니다.
