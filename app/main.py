@@ -11,6 +11,7 @@ from app.api.decks import router as ir_router
 from app.api.notices import router as notice_router
 from app.api.voice import router as voice_router
 from app.api.qa import router as qa_router
+from app.api.report import router as report_router
 
 app = FastAPI(title="POKI-AI Service", version="0.1.0")
 
@@ -31,6 +32,7 @@ app.include_router(notice_router)
 app.include_router(ir_router)
 app.include_router(voice_router)
 app.include_router(qa_router)
+app.include_router(report_router)
 
 
 @app.exception_handler(HTTPException)
