@@ -362,6 +362,83 @@ def _to_qa_session_response(session: QASessionData) -> QASessionResponse:
     )
 
 
+# ==================== 답변 분석 엔드포인트 (BACK 호환) ====================
+
+@router.post(
+    "/questions/{question_id}/answers/analyze",
+    summary="Q&A 답변 분석",
+    description="음성 또는 텍스트 답변을 받아 Gemini로 평가합니다. BACK의 analyzeQaAnswer()가 호출하는 엔드포인트.",
+    tags=["qa"],
+)
+async def analyze_qa_answer(
+    question_id: str,
+    file: UploadFile = File(None),
+    question: str = Form(...),
+    answer_guide: str = Form(default=""),
+) -> dict:
+    """
+    POST /api/questions/{question_id}/answers/analyze
+
+    음성 파일을 STT 처리 후 답변을 평가합니다.
+    음성 없이 텍스트만 있을 경우도 평가합니다.
+    """
+    from src.domain.qa.answer_evaluator import run_answer_evaluation, calculate_weighted_score
+
+    transcript = ""
+    audio_file_url = None
+
+    # 음성 파일 처리
+    if file and file.filename:
+        try:
+            from src.domain.voice.whisper_adapter import transcribe_audio
+            audio_dir = Path("data/output/qa_audio")
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            suffix = Path(file.filename).suffix or ".webm"
+            audio_path = audio_dir / f"{question_id}_answer{suffix}"
+            audio_path.write_bytes(await file.read())
+            audio_file_url = str(audio_path)
+            text, _ = transcribe_audio(audio_path)
+            transcript = text
+        except Exception as e:
+            print(f"[QA 답변] STT 실패: {e}")
+
+    if not transcript:
+        transcript = "(음성 변환 실패 또는 텍스트 미제공)"
+
+    # 답변 평가
+    try:
+        evaluation = run_answer_evaluation(
+            question_type="EVALUATOR",
+            question_content=question,
+            guidance=answer_guide,
+            answer_transcript=transcript,
+        )
+        if evaluation is None:
+            raise ValueError("Gemini 평가 결과 파싱 실패")
+        final_score = calculate_weighted_score(evaluation)
+        return {
+            "audio_file_url": audio_file_url,
+            "transcription": transcript,
+            "briefness_score": evaluation.clarity,
+            "evidence_score": evaluation.relevance,
+            "structure_score": evaluation.structure,
+            "strengths": ", ".join(evaluation.strengths) if evaluation.strengths else None,
+            "weaknesses": ", ".join(evaluation.improvements) if evaluation.improvements else None,
+            "overall_score": final_score,
+        }
+    except Exception as e:
+        print(f"[QA 답변] 평가 실패: {e}")
+        return {
+            "audio_file_url": audio_file_url,
+            "transcription": transcript,
+            "briefness_score": None,
+            "evidence_score": None,
+            "structure_score": None,
+            "strengths": None,
+            "weaknesses": None,
+        }
+
+
 # ==================== 건강 체크 ====================
 
 @router.get("/health/qa")
