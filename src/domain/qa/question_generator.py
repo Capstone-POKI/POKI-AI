@@ -1,8 +1,8 @@
 """Q&A 질문 생성 파이프라인 (단일 Gemini 호출)"""
 
 import json
-from typing import Dict, List, Optional
 from dataclasses import dataclass
+from typing import List, Optional
 
 import google.genai as genai
 
@@ -10,6 +10,7 @@ import google.genai as genai
 @dataclass
 class QuestionItem:
     """생성된 질문"""
+
     question_type: str  # NOTICE, PITCHBOOK, EVALUATOR, PRESENTER
     content: str
     guidance: Optional[str] = None
@@ -66,6 +67,51 @@ def _extract_json(text: str) -> dict:
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
     return json.loads(text.strip())
+
+
+def _fallback_questions(
+    notice_content: str,
+    irdecksummary: str,
+    presentation_content: Optional[str],
+) -> List[QuestionItem]:
+    deck_excerpt = " ".join(irdecksummary.split())[:120] or "IR 덱의 핵심 주장"
+    notice_excerpt = " ".join(notice_content.split())[:100] or "공고 요구사항"
+    presentation_excerpt = (
+        " ".join((presentation_content or "").split())[:100] or "발표에서 강조한 내용"
+    )
+
+    return [
+        QuestionItem(
+            question_type="NOTICE",
+            content=f"공고의 핵심 요구사항인 '{notice_excerpt}'을 충족했다는 정량 근거는 무엇입니까?",
+            guidance="공고 평가 항목과 연결되는 수치, 검증 자료, 달성 시점을 제시하세요.",
+            rationale="공고 적합성을 확인하기 위한 오프라인 기본 질문입니다.",
+        ),
+        QuestionItem(
+            question_type="PITCHBOOK",
+            content=f"IR 덱의 주장인 '{deck_excerpt}'에서 가장 불확실한 가정과 검증 결과는 무엇입니까?",
+            guidance="가정, 검증 방법, 표본, 결과와 다음 검증 계획을 구분해 답하세요.",
+            rationale="핵심 사업 가정의 검증 수준을 확인합니다.",
+        ),
+        QuestionItem(
+            question_type="PITCHBOOK",
+            content="제시한 시장 규모 중 실제 3년 내 접근 가능한 시장과 목표 점유율의 산출 근거는 무엇입니까?",
+            guidance="TAM, SAM, SOM을 구분하고 고객 수와 객단가로 역산하세요.",
+            rationale="시장 수치의 실행 가능성을 확인합니다.",
+        ),
+        QuestionItem(
+            question_type="EVALUATOR",
+            content="경쟁사가 같은 기능을 제공할 때 고객이 귀사를 선택할 이유를 검증된 지표로 설명해 주세요.",
+            guidance="비용, 성능, 전환 비용, 재구매율 등 비교 가능한 지표를 제시하세요.",
+            rationale="차별성이 주장에 그치지 않는지 확인합니다.",
+        ),
+        QuestionItem(
+            question_type="PRESENTER",
+            content=f"발표에서 강조한 '{presentation_excerpt}'을 한 문장 결론과 두 개의 근거로 다시 설명해 주세요.",
+            guidance="결론, 근거 수치, 사업적 의미 순서로 간결하게 답하세요.",
+            rationale="발표 전달력과 답변 구조를 확인합니다.",
+        ),
+    ]
 
 
 def run_question_generation(
@@ -125,4 +171,8 @@ def run_question_generation(
 
     except Exception as e:
         print(f"[QA 질문 생성] 실패: {e}")
-        return []
+        return _fallback_questions(
+            notice_content,
+            irdecksummary,
+            presentation_content,
+        )

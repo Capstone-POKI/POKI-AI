@@ -2,25 +2,27 @@
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
-import pytest
 
 from src.domain.qa.question_generator import run_question_generation
 from src.domain.qa.answer_evaluator import run_answer_evaluation, calculate_weighted_score
 from src.domain.qa.voice_transcriber import validate_audio_file
 from src.domain.qa.qa_service import (
-    run_qa_question_generation,
     prepare_qa_session,
-    process_answer,
     export_qa_results,
 )
 
 
 class TestQuestionGeneration:
     """질문 생성 테스트"""
-    
-    def test_run_question_generation_basic(self):
+
+    @patch(
+        "src.domain.qa.question_generator.genai.Client",
+        side_effect=ValueError("offline test"),
+    )
+    def test_run_question_generation_basic(self, _client):
         """기본 질문 생성 테스트"""
         notice = "이것은 테스트 공고문입니다. 회사는 AI 기술을 개발하고 있습니다."
         deck = "IR Deck: 주요 성과, 시장 규모 100억, 성장률 50%"
@@ -45,8 +47,12 @@ class TestQuestionGeneration:
 
 class TestAnswerEvaluation:
     """답변 평가 테스트"""
-    
-    def test_run_answer_evaluation_basic(self):
+
+    @patch(
+        "src.domain.qa.answer_evaluator.genai.Client",
+        side_effect=ValueError("offline test"),
+    )
+    def test_run_answer_evaluation_basic(self, _client):
         """기본 답변 평가 테스트"""
         question_content = "회사의 핵심 경쟁력은 무엇입니까?"
         guidance = "기술, 시장 위치, 차별성 등을 명확히 설명해야 함"
