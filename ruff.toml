@@ -1,0 +1,5 @@
+target-version = "py311"
+
+[lint.per-file-ignores]
+"tests/run_full_benchmark.py" = ["E402"]
+"tools/*.py" = ["E402"]

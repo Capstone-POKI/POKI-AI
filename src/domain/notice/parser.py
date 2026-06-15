@@ -679,8 +679,8 @@ def _infer_structure_type(criteria: List[Dict[str, Any]]) -> str:
         else:
             labels.append("UNKNOWN")
 
-    has_point = any(l == "POINT" for l in labels)
-    has_percent = any(l == "PERCENT" for l in labels)
+    has_point = any(label == "POINT" for label in labels)
+    has_percent = any(label == "PERCENT" for label in labels)
 
     if has_point and has_percent:
         return "MIXED"

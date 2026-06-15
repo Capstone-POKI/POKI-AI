@@ -48,7 +48,6 @@ from src.domain.ir.tuning_metrics import (
     evaluate_label,
     find_docai_for_label,
     load_labels,
-    normalize_category,
     extract_slide_category_pairs,
     build_confusion,
 )
