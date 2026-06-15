@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -15,17 +14,14 @@ from app.models.qa_schema import (
     QuestionResponse,
     AnswerResponse,
     AnswerFeedback,
-    AnswerRequest,
-    QASessionRequest,
     QASessionResponse,
-    ErrorResponse,
     QuestionType,
 )
+from app.upload import read_upload_limited, validate_audio_payload
 from src.domain.qa.qa_service import (
     run_qa_question_generation,
     prepare_qa_session,
     process_answer,
-    export_qa_results,
     QASessionData,
 )
 
@@ -33,6 +29,7 @@ router = APIRouter(prefix="/api", tags=["qa"])
 
 QA_SESSION_DIR = Path("data/output/qa_sessions")
 QA_RESULTS_DIR = Path("data/output/qa_results")
+MAX_QA_AUDIO_FILE_SIZE = 25 * 1024 * 1024
 
 # 메모리 내 세션 스토리지 (Docker 재시작 대비 파일 캐시 병행)
 _LOCK = threading.Lock()
@@ -395,7 +392,13 @@ async def analyze_qa_answer(
             audio_dir.mkdir(parents=True, exist_ok=True)
             suffix = Path(file.filename).suffix or ".webm"
             audio_path = audio_dir / f"{question_id}_answer{suffix}"
-            audio_path.write_bytes(await file.read())
+            payload = await read_upload_limited(
+                file,
+                MAX_QA_AUDIO_FILE_SIZE,
+                too_large_message="파일 크기는 25MB 이하여야 합니다",
+            )
+            validate_audio_payload(payload)
+            audio_path.write_bytes(payload)
             audio_file_url = str(audio_path)
             text, _ = transcribe_audio(audio_path)
             transcript = text

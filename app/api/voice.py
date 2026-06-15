@@ -10,6 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Path as FPath, UploadFile
 
 from app.state_store import load_state, save_state
+from app.upload import read_upload_limited, validate_audio_payload
 from src.domain.voice.whisper_adapter import (
     PITCH_TYPE_TO_SCENARIO,
     SCENARIO_CONFIG,
@@ -206,9 +207,12 @@ async def upload_voice_and_analyze(
     if suffix not in ALLOWED_EXTENSIONS:
         _raise_error(400, "INVALID_FILE", "지원하지 않는 음성 파일 형식입니다")
 
-    payload = await file.read()
-    if len(payload) > MAX_VOICE_FILE_SIZE:
-        _raise_error(400, "FILE_TOO_LARGE", "파일 크기는 50MB 이하여야 합니다")
+    payload = await read_upload_limited(
+        file,
+        MAX_VOICE_FILE_SIZE,
+        too_large_message="파일 크기는 25MB 이하여야 합니다",
+    )
+    validate_audio_payload(payload)
 
     explicit_context = _parse_json_object(
         context_json,

@@ -19,6 +19,7 @@ from app.models.notice_schema import (
     NoticeUploadResponse,
 )
 from app.state_store import load_state, save_state
+from app.upload import read_upload_limited, validate_pdf_payload
 from src.domain.notice.pipeline import init_gemini, run_notice_analysis
 
 router = APIRouter(prefix="/api", tags=["notice"])
@@ -476,9 +477,12 @@ async def upload_notice_and_analyze(
     if not filename.lower().endswith(".pdf") and content_type != "application/pdf":
         _raise_error(400, "INVALID_FILE", "PDF 파일만 업로드 가능합니다")
 
-    payload = await file.read()
-    if len(payload) > MAX_NOTICE_FILE_SIZE:
-        _raise_error(400, "FILE_TOO_LARGE", "파일 크기는 10MB 이하여야 합니다")
+    payload = await read_upload_limited(
+        file,
+        MAX_NOTICE_FILE_SIZE,
+        too_large_message="파일 크기는 10MB 이하여야 합니다",
+    )
+    validate_pdf_payload(payload)
 
     with _LOCK:
         # overwrite semantics for UI + DB-friendly version history

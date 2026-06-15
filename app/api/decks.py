@@ -25,6 +25,7 @@ from app.models.deck_schema import (
     PresentationGuideResponse,
 )
 from app.state_store import load_state, save_state
+from app.upload import read_upload_limited, validate_pdf_payload
 from src.domain.ir.pipeline import run_ir_analysis
 
 try:
@@ -519,9 +520,12 @@ async def upload_ir_and_analyze(
     if not filename.lower().endswith(".pdf") and content_type != "application/pdf":
         _raise_error(400, "INVALID_FILE", "PDF 파일만 업로드 가능합니다")
 
-    payload = await file.read()
-    if len(payload) > MAX_IR_FILE_SIZE:
-        _raise_error(400, "FILE_TOO_LARGE", "파일 크기는 50MB 이하여야 합니다")
+    payload = await read_upload_limited(
+        file,
+        MAX_IR_FILE_SIZE,
+        too_large_message="파일 크기는 50MB 이하여야 합니다",
+    )
+    validate_pdf_payload(payload)
 
     strategy: dict | None = None
     if strategy_json:
