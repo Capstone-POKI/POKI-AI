@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Path as FPath, UploadFile
 
+from app.state_store import load_state, save_state
 from src.domain.voice.whisper_adapter import (
     PITCH_TYPE_TO_SCENARIO,
     SCENARIO_CONFIG,
@@ -49,6 +50,72 @@ class VoiceRow:
 
 _VOICE_BY_ID: dict[str, VoiceRow] = {}
 _VOICE_IDS_BY_PITCH: dict[str, list[str]] = {}
+_STATE_NAME = "voice"
+
+
+def _serialize_voice(row: VoiceRow) -> dict:
+    return {
+        **row.__dict__,
+        "created_at": row.created_at.isoformat(),
+        "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+    }
+
+
+def _persist_state_locked() -> None:
+    save_state(
+        _STATE_NAME,
+        {
+            "voices": {
+                voice_id: _serialize_voice(row)
+                for voice_id, row in _VOICE_BY_ID.items()
+            },
+            "voice_ids_by_pitch": _VOICE_IDS_BY_PITCH,
+        },
+    )
+
+
+def _restore_state() -> None:
+    payload = load_state(_STATE_NAME)
+    voices = payload.get("voices", {})
+    by_pitch = payload.get("voice_ids_by_pitch", {})
+
+    if isinstance(voices, dict):
+        for voice_id, raw in voices.items():
+            if not isinstance(raw, dict):
+                continue
+            try:
+                completed_at = raw.get("completed_at")
+                row = VoiceRow(
+                    **{
+                        **raw,
+                        "created_at": datetime.fromisoformat(raw["created_at"]),
+                        "completed_at": (
+                            datetime.fromisoformat(completed_at)
+                            if completed_at
+                            else None
+                        ),
+                    }
+                )
+                if row.status == "IN_PROGRESS":
+                    row.status = "FAILED"
+                    row.error_message = (
+                        "AI 서버 재시작으로 진행 중이던 분석이 중단되었습니다."
+                    )
+                _VOICE_BY_ID[str(voice_id)] = row
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    if isinstance(by_pitch, dict):
+        _VOICE_IDS_BY_PITCH.update(
+            {
+                str(pitch_id): [str(item) for item in ids]
+                for pitch_id, ids in by_pitch.items()
+                if isinstance(ids, list)
+            }
+        )
+
+
+_restore_state()
 
 
 def _get_latest_deck_json(pitch_id: str) -> dict:
@@ -99,12 +166,14 @@ def _run_voice_background(
                 row.status = "COMPLETED"
                 row.result = result
                 row.completed_at = _now()
+                _persist_state_locked()
     except Exception as exc:
         with _LOCK:
             row = _VOICE_BY_ID.get(voice_id)
             if row:
                 row.status = "FAILED"
                 row.error_message = str(exc)
+                _persist_state_locked()
     finally:
         try:
             audio_path.unlink(missing_ok=True)
@@ -187,6 +256,7 @@ async def upload_voice_and_analyze(
         row = VoiceRow(id=voice_id, pitch_id=pitch_id, version=version)
         _VOICE_BY_ID[voice_id] = row
         _VOICE_IDS_BY_PITCH.setdefault(pitch_id, []).append(voice_id)
+        _persist_state_locked()
 
     audio_path.write_bytes(payload)
 
