@@ -1,7 +1,7 @@
 """Gemini Vision 기반 슬라이드 유형 분류 모듈."""
 from __future__ import annotations
 
-import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -71,8 +71,8 @@ def pdf_to_images(pdf_path: str, dpi: int = 100) -> Dict[int, str]:
         for img_file in sorted(Path(tmp_dir).glob("slide-*.jpg")):
             parts = img_file.stem.split("-")
             page_num = int(parts[-1])
-            dest = Path(tempfile.mktemp(suffix=".jpg"))
-            import shutil
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_file:
+                dest = Path(tmp_file.name)
             shutil.copy(img_file, dest)
             images[page_num] = str(dest)
     return images

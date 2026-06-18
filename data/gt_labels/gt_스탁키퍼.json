@@ -1,0 +1,109 @@
+{
+  "deck_name": "스탁키퍼",
+  "folder": "경진대회_정창경10_스탁키퍼",
+  "pitch_type": "STARTUP_CONTEST",
+  "source_final_json": "data/output/ir_benchmark/경진대회_정창경10_스탁키퍼/경진대회_정창경10_스탁키퍼_final.json",
+  "note": "모델 예측값으로 초기화됨. gt_category 필드를 실제 정답으로 수정하세요.",
+  "slides": [
+    {
+      "slide_index": 1,
+      "gt_category": "COVER",
+      "model_predicted": "COVER"
+    },
+    {
+      "slide_index": 2,
+      "gt_category": "MARKET",
+      "model_predicted": "MARKET"
+    },
+    {
+      "slide_index": 3,
+      "gt_category": "FINANCE",
+      "model_predicted": "FINANCE"
+    },
+    {
+      "slide_index": 4,
+      "gt_category": "OTHER",
+      "model_predicted": "OTHER"
+    },
+    {
+      "slide_index": 5,
+      "gt_category": "FINANCE",
+      "model_predicted": "FINANCE"
+    },
+    {
+      "slide_index": 6,
+      "gt_category": "FINANCE",
+      "model_predicted": "FINANCE"
+    },
+    {
+      "slide_index": 7,
+      "gt_category": "SOLUTION",
+      "model_predicted": "SOLUTION"
+    },
+    {
+      "slide_index": 8,
+      "gt_category": "FINANCE",
+      "model_predicted": "FINANCE"
+    },
+    {
+      "slide_index": 9,
+      "gt_category": "OTHER",
+      "model_predicted": "OTHER"
+    },
+    {
+      "slide_index": 10,
+      "gt_category": "SOLUTION",
+      "model_predicted": "SOLUTION"
+    },
+    {
+      "slide_index": 11,
+      "gt_category": "BUSINESS_MODEL",
+      "model_predicted": "BUSINESS_MODEL"
+    },
+    {
+      "slide_index": 12,
+      "gt_category": "COVER",
+      "model_predicted": "COVER"
+    },
+    {
+      "slide_index": 13,
+      "gt_category": "TRACTION",
+      "model_predicted": "TRACTION"
+    },
+    {
+      "slide_index": 14,
+      "gt_category": "PROBLEM",
+      "model_predicted": "PROBLEM"
+    },
+    {
+      "slide_index": 15,
+      "gt_category": "ASK",
+      "model_predicted": "ASK"
+    },
+    {
+      "slide_index": 16,
+      "gt_category": "MARKET",
+      "model_predicted": "MARKET"
+    },
+    {
+      "slide_index": 17,
+      "gt_category": "MARKET",
+      "model_predicted": "MARKET"
+    },
+    {
+      "slide_index": 18,
+      "gt_category": "FINANCE",
+      "model_predicted": "FINANCE"
+    },
+    {
+      "slide_index": 19,
+      "gt_category": "FINANCE",
+      "model_predicted": "FINANCE"
+    },
+    {
+      "slide_index": 20,
+      "gt_category": "SOLUTION",
+      "model_predicted": "SOLUTION"
+    }
+  ]
+}

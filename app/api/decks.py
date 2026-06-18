@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
@@ -24,7 +25,12 @@ from app.models.deck_schema import (
     IRUploadResponse,
     PresentationGuideResponse,
 )
+from app.state_store import load_state, save_state
+from app.upload import read_upload_limited, validate_pdf_payload
 from src.domain.ir.pipeline import run_ir_analysis
+from src.infrastructure.storage.s3_adapter import S3Adapter
+
+_s3 = S3Adapter()
 
 try:
     from app.api import notices as notice_router_module
@@ -80,6 +86,87 @@ _LOCK = threading.Lock()
 _DECK_BY_ID: dict[str, DeckRow] = {}
 _DECK_IDS_BY_PITCH: dict[str, list[str]] = {}
 _RESULT_BY_DECK_ID: dict[str, DeckResultRow] = {}
+_STATE_NAME = "decks"
+
+
+def _serialize_deck(row: DeckRow) -> dict:
+    return {
+        **row.__dict__,
+        "analysis_status": row.analysis_status.value,
+        "analyzed_at": row.analyzed_at.isoformat() if row.analyzed_at else None,
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _persist_state_locked() -> None:
+    save_state(
+        _STATE_NAME,
+        {
+            "decks": {
+                deck_id: _serialize_deck(row)
+                for deck_id, row in _DECK_BY_ID.items()
+            },
+            "deck_ids_by_pitch": _DECK_IDS_BY_PITCH,
+            "results": {
+                deck_id: row.__dict__ for deck_id, row in _RESULT_BY_DECK_ID.items()
+            },
+        },
+    )
+
+
+def _restore_state() -> None:
+    payload = load_state(_STATE_NAME)
+    decks = payload.get("decks", {})
+    by_pitch = payload.get("deck_ids_by_pitch", {})
+    results = payload.get("results", {})
+
+    if isinstance(decks, dict):
+        for deck_id, raw in decks.items():
+            if not isinstance(raw, dict):
+                continue
+            try:
+                analyzed_at = raw.get("analyzed_at")
+                row = DeckRow(
+                    **{
+                        **raw,
+                        "analysis_status": AnalysisStatus(raw["analysis_status"]),
+                        "analyzed_at": (
+                            datetime.fromisoformat(analyzed_at)
+                            if analyzed_at
+                            else None
+                        ),
+                        "created_at": datetime.fromisoformat(raw["created_at"]),
+                        "updated_at": datetime.fromisoformat(raw["updated_at"]),
+                    }
+                )
+                if row.analysis_status == AnalysisStatus.IN_PROGRESS:
+                    row.analysis_status = AnalysisStatus.FAILED
+                    row.pdf_upload_status = "FAILED"
+                    row.error_message = (
+                        "AI 서버 재시작으로 진행 중이던 분석이 중단되었습니다."
+                    )
+                    row.updated_at = _now()
+                _DECK_BY_ID[str(deck_id)] = row
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    if isinstance(by_pitch, dict):
+        _DECK_IDS_BY_PITCH.update(
+            {
+                str(pitch_id): [str(item) for item in ids]
+                for pitch_id, ids in by_pitch.items()
+                if isinstance(ids, list)
+            }
+        )
+
+    if isinstance(results, dict):
+        for deck_id, raw in results.items():
+            if isinstance(raw, dict):
+                _RESULT_BY_DECK_ID[str(deck_id)] = DeckResultRow(**raw)
+
+
+_restore_state()
 
 
 def _next_deck_version(pitch_id: str) -> int:
@@ -403,6 +490,7 @@ def _run_ir_analysis_background(
             row.error_message = None
             row.analyzed_at = _now()
             row.updated_at = _now()
+            _persist_state_locked()
     except Exception as exc:  # pragma: no cover
         with _LOCK:
             row = _DECK_BY_ID.get(deck_id)
@@ -412,6 +500,7 @@ def _run_ir_analysis_background(
             row.pdf_upload_status = "FAILED"
             row.error_message = str(exc)
             row.updated_at = _now()
+            _persist_state_locked()
 
 
 @router.post(
@@ -435,9 +524,12 @@ async def upload_ir_and_analyze(
     if not filename.lower().endswith(".pdf") and content_type != "application/pdf":
         _raise_error(400, "INVALID_FILE", "PDF 파일만 업로드 가능합니다")
 
-    payload = await file.read()
-    if len(payload) > MAX_IR_FILE_SIZE:
-        _raise_error(400, "FILE_TOO_LARGE", "파일 크기는 50MB 이하여야 합니다")
+    payload = await read_upload_limited(
+        file,
+        MAX_IR_FILE_SIZE,
+        too_large_message="파일 크기는 50MB 이하여야 합니다",
+    )
+    validate_pdf_payload(payload)
 
     strategy: dict | None = None
     if strategy_json:
@@ -484,8 +576,24 @@ async def upload_ir_and_analyze(
         _DECK_BY_ID[deck_id] = row
         _DECK_IDS_BY_PITCH.setdefault(pitch_id, []).append(deck_id)
         _RESULT_BY_DECK_ID[deck_id] = DeckResultRow()
+        _persist_state_locked()
 
     pdf_path.write_bytes(payload)
+
+    s3_url = await asyncio.to_thread(
+        lambda: _s3.upload_file(
+            key=f"ir-decks/{deck_id}.pdf",
+            data=payload,
+            content_type="application/pdf",
+        )
+    )
+    if s3_url:
+        with _LOCK:
+            row = _DECK_BY_ID.get(deck_id)
+            if row:
+                row.pdf_url = s3_url
+                _persist_state_locked()
+
     background_tasks.add_task(
         _run_ir_analysis_background,
         deck_id,

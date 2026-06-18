@@ -1,8 +1,9 @@
 """답변 평가 파이프라인"""
 
 import json
-from typing import Dict, Optional
+import re
 from dataclasses import dataclass
+from typing import Optional
 
 import google.genai as genai
 
@@ -15,6 +16,7 @@ from src.domain.qa.prompts import (
 @dataclass
 class AnswerEvaluation:
     """답변 평가 결과"""
+
     score: int
     relevance: int  # 적합도
     clarity: int    # 명료도
@@ -22,6 +24,54 @@ class AnswerEvaluation:
     strengths: list
     improvements: list
     reasoning: str
+
+
+def _keyword_set(text: str) -> set[str]:
+    return {
+        token.lower()
+        for token in re.findall(r"[A-Za-z0-9가-힣]{2,}", text)
+        if len(token) >= 2
+    }
+
+
+def _fallback_evaluation(
+    question_content: str,
+    guidance: str,
+    answer_transcript: str,
+) -> AnswerEvaluation:
+    answer = answer_transcript.strip()
+    expected_keywords = _keyword_set(f"{question_content} {guidance}")
+    answer_keywords = _keyword_set(answer)
+    overlap = len(expected_keywords & answer_keywords) / max(len(expected_keywords), 1)
+
+    relevance = min(85, 40 + round(overlap * 60))
+    clarity = min(85, 45 + min(len(answer), 240) // 8)
+    sentence_count = len([part for part in re.split(r"[.!?。]+", answer) if part.strip()])
+    structure = min(85, 45 + min(sentence_count, 4) * 8)
+    score = round(relevance * 0.4 + clarity * 0.35 + structure * 0.25)
+
+    strengths = []
+    improvements = []
+    if overlap >= 0.2:
+        strengths.append("질문과 관련된 핵심 용어를 포함했습니다.")
+    else:
+        improvements.append("질문의 핵심 용어와 직접 연결되는 답변이 필요합니다.")
+    if len(answer) >= 80:
+        strengths.append("답변에 일정 수준의 구체성이 있습니다.")
+    else:
+        improvements.append("수치나 검증 사례를 추가해 답변을 구체화하세요.")
+    if sentence_count < 2:
+        improvements.append("결론과 근거를 분리해 구조적으로 답변하세요.")
+
+    return AnswerEvaluation(
+        score=score,
+        relevance=relevance,
+        clarity=clarity,
+        structure=structure,
+        strengths=strengths,
+        improvements=improvements,
+        reasoning="외부 모델을 사용할 수 없어 길이, 구조, 키워드 중첩 기반 fallback 평가를 적용했습니다.",
+    )
 
 
 def run_answer_evaluation(
@@ -44,31 +94,24 @@ def run_answer_evaluation(
     Returns:
         평가 결과 또는 None (실패 시)
     """
-    client = genai.Client()
-    
-    # 사용자 프롬프트 구성
-    user_prompt = ANSWER_EVALUATION_USER_PROMPT.format(
-        question_type=question_type,
-        question_content=question_content,
-        guidance=guidance,
-        answer_transcript=answer_transcript,
-    )
-    
-    # Gemini API 호출
-    response = client.models.generate_content(
-        model=model_name,
-        contents=ANSWER_EVALUATION_SYSTEM_PROMPT + "\n\n" + user_prompt,
-        config=genai.types.GenerateContentConfig(
-            temperature=0.3,
-            top_p=0.95,
-        ),
-    )
-    
-    # 응답 파싱
-    response_text = response.text
-    
-    # JSON 추출
     try:
+        client = genai.Client()
+        user_prompt = ANSWER_EVALUATION_USER_PROMPT.format(
+            question_type=question_type,
+            question_content=question_content,
+            guidance=guidance,
+            answer_transcript=answer_transcript,
+        )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=ANSWER_EVALUATION_SYSTEM_PROMPT + "\n\n" + user_prompt,
+            config=genai.types.GenerateContentConfig(
+                temperature=0.3,
+                top_p=0.95,
+            ),
+        )
+        response_text = response.text
+
         # JSON 코드블록 제거
         if "```json" in response_text:
             json_str = response_text.split("```json")[1].split("```")[0].strip()
@@ -88,11 +131,14 @@ def run_answer_evaluation(
             improvements=data.get("improvements", []),
             reasoning=data.get("reasoning", ""),
         )
-    
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"❌ 답변 평가 JSON 파싱 실패: {e}")
-        print(f"응답: {response_text}")
-        return None
+
+    except Exception as e:
+        print(f"[QA 답변 평가] 모델 평가 실패: {e}")
+        return _fallback_evaluation(
+            question_content,
+            guidance,
+            answer_transcript,
+        )
 
 
 def calculate_weighted_score(evaluation: AnswerEvaluation) -> int:

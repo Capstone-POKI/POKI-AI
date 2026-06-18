@@ -1,11 +1,11 @@
-from dotenv import load_dotenv
-
-load_dotenv()
+import hmac
+import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app import env as _env  # noqa: F401
 from app.api.health import router as health_router
 from app.api.decks import router as ir_router
 from app.api.notices import router as notice_router
@@ -14,6 +14,35 @@ from app.api.qa import router as qa_router
 from app.api.report import router as report_router
 
 app = FastAPI(title="POKI-AI Service", version="0.1.0")
+
+
+@app.middleware("http")
+async def require_internal_api_key(request: Request, call_next):
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+
+    expected_key = os.getenv("AI_INTERNAL_API_KEY", "").strip()
+    if not expected_key:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "AI_AUTH_NOT_CONFIGURED",
+                "message": "AI service authentication is not configured.",
+            },
+        )
+
+    provided_key = request.headers.get("x-internal-api-key", "")
+    if not hmac.compare_digest(provided_key, expected_key):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": "UNAUTHORIZED",
+                "message": "A valid internal API key is required.",
+            },
+        )
+
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,

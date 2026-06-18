@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,7 +19,12 @@ from app.models.notice_schema import (
     NoticeUpdateRequest,
     NoticeUploadResponse,
 )
+from app.state_store import load_state, save_state
+from app.upload import read_upload_limited, validate_pdf_payload
 from src.domain.notice.pipeline import init_gemini, run_notice_analysis
+from src.infrastructure.storage.s3_adapter import S3Adapter
+
+_s3 = S3Adapter()
 
 router = APIRouter(prefix="/api", tags=["notice"])
 
@@ -91,6 +97,112 @@ _LOCK = threading.Lock()
 _NOTICE_BY_ID: dict[str, NoticeRow] = {}
 _NOTICE_IDS_BY_PITCH: dict[str, list[str]] = {}
 _CRITERIA_BY_NOTICE_ID: dict[str, list[NoticeCriteriaRow]] = {}
+_STATE_NAME = "notices"
+
+
+def _serialize_notice(row: NoticeRow) -> dict:
+    return {
+        **row.__dict__,
+        "analysis_status": row.analysis_status.value,
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _serialize_criteria(row: NoticeCriteriaRow) -> dict:
+    return {
+        **row.__dict__,
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _persist_state_locked() -> None:
+    save_state(
+        _STATE_NAME,
+        {
+            "notices": {
+                notice_id: _serialize_notice(row)
+                for notice_id, row in _NOTICE_BY_ID.items()
+            },
+            "notice_ids_by_pitch": _NOTICE_IDS_BY_PITCH,
+            "criteria_by_notice_id": {
+                notice_id: [_serialize_criteria(row) for row in rows]
+                for notice_id, rows in _CRITERIA_BY_NOTICE_ID.items()
+            },
+        },
+    )
+
+
+def _restore_state() -> None:
+    payload = load_state(_STATE_NAME)
+    notices = payload.get("notices", {})
+    criteria = payload.get("criteria_by_notice_id", {})
+    by_pitch = payload.get("notice_ids_by_pitch", {})
+
+    if isinstance(notices, dict):
+        for notice_id, raw in notices.items():
+            if not isinstance(raw, dict):
+                continue
+            try:
+                row = NoticeRow(
+                    **{
+                        **raw,
+                        "analysis_status": NoticeAnalysisStatus(
+                            raw["analysis_status"]
+                        ),
+                        "created_at": datetime.fromisoformat(raw["created_at"]),
+                        "updated_at": datetime.fromisoformat(raw["updated_at"]),
+                    }
+                )
+                if row.analysis_status == NoticeAnalysisStatus.IN_PROGRESS:
+                    row.analysis_status = NoticeAnalysisStatus.FAILED
+                    row.pdf_upload_status = "FAILED"
+                    row.error_message = (
+                        "AI 서버 재시작으로 진행 중이던 분석이 중단되었습니다."
+                    )
+                    row.updated_at = _now()
+                _NOTICE_BY_ID[str(notice_id)] = row
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    if isinstance(by_pitch, dict):
+        _NOTICE_IDS_BY_PITCH.update(
+            {
+                str(pitch_id): [str(item) for item in ids]
+                for pitch_id, ids in by_pitch.items()
+                if isinstance(ids, list)
+            }
+        )
+
+    if isinstance(criteria, dict):
+        for notice_id, rows in criteria.items():
+            if not isinstance(rows, list):
+                continue
+            restored_rows = []
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    continue
+                try:
+                    restored_rows.append(
+                        NoticeCriteriaRow(
+                            **{
+                                **raw,
+                                "created_at": datetime.fromisoformat(
+                                    raw["created_at"]
+                                ),
+                                "updated_at": datetime.fromisoformat(
+                                    raw["updated_at"]
+                                ),
+                            }
+                        )
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+            _CRITERIA_BY_NOTICE_ID[str(notice_id)] = restored_rows
+
+
+_restore_state()
 
 
 def _infer_pitch_type(recruitment_type: str | None, fallback: str = "VC_DEMO") -> str:
@@ -337,6 +449,7 @@ def _run_notice_analysis_background(notice_id: str, pdf_path: Path) -> None:
             row.pdf_upload_status = "COMPLETED"
             row.error_message = None
             row.updated_at = _now()
+            _persist_state_locked()
     except Exception as exc:  # pragma: no cover - defensive path
         with _LOCK:
             row = _NOTICE_BY_ID.get(notice_id)
@@ -346,6 +459,7 @@ def _run_notice_analysis_background(notice_id: str, pdf_path: Path) -> None:
             row.pdf_upload_status = "FAILED"
             row.error_message = str(exc)
             row.updated_at = _now()
+            _persist_state_locked()
 
 
 @router.post(
@@ -367,9 +481,12 @@ async def upload_notice_and_analyze(
     if not filename.lower().endswith(".pdf") and content_type != "application/pdf":
         _raise_error(400, "INVALID_FILE", "PDF 파일만 업로드 가능합니다")
 
-    payload = await file.read()
-    if len(payload) > MAX_NOTICE_FILE_SIZE:
-        _raise_error(400, "FILE_TOO_LARGE", "파일 크기는 10MB 이하여야 합니다")
+    payload = await read_upload_limited(
+        file,
+        MAX_NOTICE_FILE_SIZE,
+        too_large_message="파일 크기는 10MB 이하여야 합니다",
+    )
+    validate_pdf_payload(payload)
 
     with _LOCK:
         # overwrite semantics for UI + DB-friendly version history
@@ -396,10 +513,25 @@ async def upload_notice_and_analyze(
         _NOTICE_BY_ID[notice_id] = row
         _NOTICE_IDS_BY_PITCH.setdefault(pitch_id, []).append(notice_id)
         _CRITERIA_BY_NOTICE_ID[notice_id] = _default_criteria_rows(row.pitch_type, notice_id)
+        _persist_state_locked()
 
     NOTICE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     pdf_path = NOTICE_UPLOAD_DIR / f"{notice_id}.pdf"
     pdf_path.write_bytes(payload)
+
+    s3_url = await asyncio.to_thread(
+        lambda: _s3.upload_file(
+            key=f"notices/{notice_id}.pdf",
+            data=payload,
+            content_type="application/pdf",
+        )
+    )
+    if s3_url:
+        with _LOCK:
+            row = _NOTICE_BY_ID.get(notice_id)
+            if row:
+                row.pdf_url = s3_url
+                _persist_state_locked()
 
     background_tasks.add_task(_run_notice_analysis_background, notice_id, pdf_path)
 
@@ -439,10 +571,10 @@ def get_notice_result(notice_id: str = FPath(..., description="Notice ID")):
             updated_at=row.updated_at,
         )
 
-    criteria_rows = _CRITERIA_BY_NOTICE_ID.get(notice_id, [])
-    if not criteria_rows:
-        criteria_rows = _default_criteria_rows(row.pitch_type, notice_id)
-        with _LOCK:
+    with _LOCK:
+        criteria_rows = _CRITERIA_BY_NOTICE_ID.get(notice_id, [])
+        if not criteria_rows:
+            criteria_rows = _default_criteria_rows(row.pitch_type, notice_id)
             _CRITERIA_BY_NOTICE_ID[notice_id] = criteria_rows
     criteria = _criteria_rows_to_api_items(criteria_rows)
     return NoticeResultCompletedResponse(
@@ -513,6 +645,7 @@ def patch_notice(notice_id: str, payload: NoticeUpdateRequest):
 
         row.analysis_status = NoticeAnalysisStatus.COMPLETED
         row.updated_at = _now()
+        _persist_state_locked()
 
         criteria_rows = _CRITERIA_BY_NOTICE_ID.get(notice_id, []) or _default_criteria_rows(row.pitch_type, notice_id)
         criteria = _criteria_rows_to_api_items(criteria_rows)

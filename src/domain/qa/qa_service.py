@@ -3,11 +3,11 @@
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from app.models.qa_schema import QuestionResponse, AnswerResponse, AnswerFeedback
+from app.models.qa_schema import AnswerResponse, AnswerFeedback
 from src.domain.qa.question_generator import run_question_generation, QuestionItem
 from src.domain.qa.answer_evaluator import (
     run_answer_evaluation,
@@ -111,9 +111,11 @@ def prepare_qa_session(
             "question_id": question_id,
             "order": idx,
             "question_type": q.question_type,
+            "category": q.category,
             "content": q.content,
             "guidance": q.guidance,
             "rationale": q.rationale,
+            "created_at": _now().isoformat(),
         })
     
     return session

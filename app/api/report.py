@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
-from fastapi import APIRouter, HTTPException, Path as FPath
+from fastapi import APIRouter, Path as FPath
 from pydantic import BaseModel
 
 from src.infrastructure.gemini.client import GeminiJSONClient

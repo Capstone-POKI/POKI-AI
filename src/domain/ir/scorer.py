@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 
 from src.domain.ir.prompts import build_ir_analysis_prompt
 from src.infrastructure.gemini.client import GeminiJSONClient

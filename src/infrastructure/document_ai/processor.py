@@ -106,7 +106,7 @@ def process_document(
     
     # 강화 기능 적용
     if enable_enhancement:
-        print(f"🔧 강화 기능 적용 중...")
+        print("🔧 강화 기능 적용 중...")
         doc_dict = detect_sections(doc_dict)
         doc_dict = extract_numbers(doc_dict)
         doc_dict = generate_metadata(doc_dict)

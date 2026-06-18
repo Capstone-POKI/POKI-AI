@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from src.infrastructure.document_ai.pipeline import run_document_ai_pipeline
 

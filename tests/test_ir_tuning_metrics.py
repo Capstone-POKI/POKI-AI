@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from src.domain.ir.tuning_metrics import (
     aggregate_eval,

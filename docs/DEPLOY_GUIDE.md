@@ -88,7 +88,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/poki?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/poki?schema=public
       AI_SERVER_URL: http://fastapi-ai:8000
     depends_on:
       - postgres

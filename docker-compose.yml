@@ -7,9 +7,15 @@ services:
       - .env
     volumes:
       - ./credentials:/app/credentials:ro
+      - ai_uploads:/app/data/uploads
+      - ai_output:/app/data/output
     restart: unless-stopped
     networks:
       - poki-net
+
+volumes:
+  ai_uploads:
+  ai_output:
 
 networks:
   poki-net:

@@ -2,6 +2,7 @@
 credentials/
 *.json
 !data/config/*.json
+!data/gt_labels/*.json
 .env
 /venv/
 /.venv/
@@ -19,5 +20,18 @@ __pycache__/
 # macOS
 .DS_Store
 
+# Runtime chunk cache
+data/chunks/
+
+# Temp scripts
+test_gemini_only.py
+
 # Local worklogs
 WORKLOG_NOTICE_2026-02-16.md
+docs/ERD_V3_BACKEND_DEV_PLAN.md
+docs/IR_DECK_API_SPEC.md
+docs/IR_DECK_B_V1_CONTRACT.md
+docs/IR_DECK_THREE_LAYER_SCHEMA.md
+docs/NOTICE_API_DB_MAPPING_V4.md
+docs/QA_INTEGRATION_GUIDE.md
+docs/VOICE_REPORT_REVIEW_GUIDE.md
