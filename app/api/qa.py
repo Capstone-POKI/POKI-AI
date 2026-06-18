@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +19,7 @@ from app.models.qa_schema import (
     QASessionResponse,
     QuestionType,
 )
+from app.state_store import load_state, save_state
 from app.upload import read_upload_limited, validate_audio_payload
 from src.domain.qa.qa_service import (
     run_qa_question_generation,
@@ -31,10 +34,77 @@ QA_SESSION_DIR = Path("data/output/qa_sessions")
 QA_RESULTS_DIR = Path("data/output/qa_results")
 MAX_QA_AUDIO_FILE_SIZE = 25 * 1024 * 1024
 
-# 메모리 내 세션 스토리지 (Docker 재시작 대비 파일 캐시 병행)
+# 메모리 내 세션 스토리지
 _LOCK = threading.Lock()
 _QA_SESSIONS: dict[str, QASessionData] = {}
 _SESSION_IDS_BY_PITCH: dict[str, list[str]] = {}
+_STATE_NAME = "qa"
+
+
+def _serialize_session(session: QASessionData) -> dict:
+    return {
+        "session_id": session.session_id,
+        "pitch_id": session.pitch_id,
+        "notice_id": session.notice_id,
+        "ir_deck_id": session.ir_deck_id,
+        "voice_report_id": session.voice_report_id,
+        "questions": session.questions,
+        "answers": session.answers,
+        "status": session.status,
+        "created_at": session.created_at.isoformat(),
+        "completed_at": session.completed_at.isoformat() if session.completed_at else None,
+    }
+
+
+def _persist_state_locked() -> None:
+    save_state(
+        _STATE_NAME,
+        {
+            "sessions": {
+                sid: _serialize_session(sess)
+                for sid, sess in _QA_SESSIONS.items()
+            },
+            "session_ids_by_pitch": _SESSION_IDS_BY_PITCH,
+        },
+    )
+
+
+def _restore_state() -> None:
+    payload = load_state(_STATE_NAME)
+    sessions = payload.get("sessions", {})
+    by_pitch = payload.get("session_ids_by_pitch", {})
+
+    if isinstance(sessions, dict):
+        for sid, raw in sessions.items():
+            if not isinstance(raw, dict):
+                continue
+            try:
+                completed_at = raw.get("completed_at")
+                session = QASessionData(
+                    session_id=raw["session_id"],
+                    pitch_id=raw["pitch_id"],
+                    notice_id=raw.get("notice_id"),
+                    ir_deck_id=raw.get("ir_deck_id"),
+                    voice_report_id=raw.get("voice_report_id"),
+                    questions=raw.get("questions", []),
+                    answers=raw.get("answers", {}),
+                    status=raw.get("status", "COMPLETED"),
+                    created_at=datetime.fromisoformat(raw["created_at"]),
+                    completed_at=datetime.fromisoformat(completed_at) if completed_at else None,
+                )
+                _QA_SESSIONS[str(sid)] = session
+            except (KeyError, TypeError, ValueError):
+                continue
+
+    if isinstance(by_pitch, dict):
+        _SESSION_IDS_BY_PITCH.update({
+            str(pid): [str(item) for item in ids]
+            for pid, ids in by_pitch.items()
+            if isinstance(ids, list)
+        })
+
+
+_restore_state()
 
 
 def _now() -> datetime:
@@ -118,8 +188,8 @@ async def generate_qa_questions(
     """Q&A 질문 생성 (멀티에이전트 4-Agent 파이프라인)"""
     session_id = str(uuid4())
 
-    # 질문 생성 (동기 — BackgroundTasks 제거)
-    questions = run_qa_question_generation(
+    questions = await asyncio.to_thread(
+        run_qa_question_generation,
         pitch_id=pitch_id,
         notice_content=notice_content,
         irdecksummary=irdecksummary,
@@ -150,9 +220,7 @@ async def generate_qa_questions(
         if pitch_id not in _SESSION_IDS_BY_PITCH:
             _SESSION_IDS_BY_PITCH[pitch_id] = []
         _SESSION_IDS_BY_PITCH[pitch_id].append(session_id)
-
-    # 파일 캐시 저장 (Docker 재시작 대비)
-    _save_questions_to_cache(pitch_id, session)
+        _persist_state_locked()
 
     print(f"[QA] 세션 생성 완료: {session_id} ({len(questions)}개 질문)")
     return _to_qa_session_response(session)
@@ -256,42 +324,63 @@ async def submit_answer(
     if not session or session.pitch_id != pitch_id:
         _raise_error(404, "SESSION_NOT_FOUND", "해당 세션을 찾을 수 없습니다")
 
-    # 음성 파일 저장 (필요한 경우)
+    # 음성 파일 저장 (크기 제한 + 실제 확장자 보존 + question_id sanitize)
+    safe_qid = re.sub(r"[^a-zA-Z0-9\-]", "_", question_id)
     audio_path = None
-    if audio:
+    if audio and audio.filename:
         audio_dir = Path("data/output/qa_audio")
         audio_dir.mkdir(parents=True, exist_ok=True)
-        audio_path = audio_dir / f"{session_id}_{question_id}.wav"
+        suffix = Path(audio.filename).suffix.lower() or ".wav"
+        audio_path = audio_dir / f"{session_id}_{safe_qid}{suffix}"
+        payload = await read_upload_limited(
+            audio,
+            MAX_QA_AUDIO_FILE_SIZE,
+            too_large_message="파일 크기는 25MB 이하여야 합니다",
+        )
+        audio_path.write_bytes(payload)
 
-        with open(audio_path, "wb") as f:
-            f.write(await audio.read())
-
-    # 답변 처리 (동기)
+    # 답변 처리 — _LOCK을 잡지 않고 Gemini/STT 호출
     try:
-        with _LOCK:
-            answer = process_answer(
-                session=session,
-                question_id=question_id,
-                audio_path=str(audio_path) if audio_path else None,
-                text_transcript=text_transcript,
-            )
-
+        answer = await asyncio.to_thread(
+            process_answer,
+            session,
+            question_id,
+            str(audio_path) if audio_path else None,
+            text_transcript,
+        )
         if answer:
+            with _LOCK:
+                _persist_state_locked()
             print(f"[QA] 답변 처리 완료: {question_id}")
             return answer
-
     except Exception as e:
         print(f"[QA] 답변 평가 중 오류: {e}")
 
-    # 평가 실패 시 임시 응답
+    # 평가 실패 시 FAILED 상태로 저장해 GET 폴링이 끝날 수 있도록 함
     answer_id = str(uuid4())
+    failed_stub: dict = {
+        "answer_id": answer_id,
+        "question_id": question_id,
+        "pitch_id": pitch_id,
+        "audio_url": str(audio_path) if audio_path else None,
+        "text_transcript": text_transcript or "",
+        "evaluation_status": AnalysisStatus.FAILED.value,
+        "created_at": _now().isoformat(),
+        "evaluated_at": None,
+        "feedback": None,
+    }
+    with _LOCK:
+        live_session = _QA_SESSIONS.get(session_id)
+        if live_session:
+            live_session.answers[question_id] = failed_stub
+        _persist_state_locked()
     return AnswerResponse(
         answer_id=answer_id,
         question_id=question_id,
         pitch_id=pitch_id,
         audio_url=str(audio_path) if audio_path else None,
         text_transcript=text_transcript or "",
-        evaluation_status=AnalysisStatus.IN_PROGRESS,
+        evaluation_status=AnalysisStatus.FAILED,
         created_at=_now(),
     )
 
@@ -309,23 +398,29 @@ async def get_answer_evaluation(
     if not session or session.pitch_id != pitch_id:
         _raise_error(404, "SESSION_NOT_FOUND", "해당 세션을 찾을 수 없습니다")
 
-    # 답변 찾기
-    for q_id, answer_data in session.answers.items():
-        if answer_data.get("answer_id") == answer_id:
-            feedback_data = answer_data.get("feedback")
-            return AnswerResponse(
-                answer_id=answer_data["answer_id"],
-                question_id=answer_data["question_id"],
-                pitch_id=answer_data["pitch_id"],
-                audio_url=answer_data.get("audio_url"),
-                text_transcript=answer_data["text_transcript"],
-                feedback=AnswerFeedback(**feedback_data) if feedback_data else None,
-                evaluation_status=answer_data.get("evaluation_status"),
-                created_at=datetime.fromisoformat(answer_data["created_at"]),
-                evaluated_at=datetime.fromisoformat(answer_data["evaluated_at"])
-                if answer_data.get("evaluated_at")
-                else None,
-            )
+    # 답변 찾기 — session.answers 순회는 _LOCK 안에서 수행해 동시 쓰기와의 race 방지
+    with _LOCK:
+        found = None
+        for _q_id, answer_data in session.answers.items():
+            if answer_data.get("answer_id") == answer_id:
+                found = dict(answer_data)
+                break
+
+    if found:
+        feedback_data = found.get("feedback")
+        return AnswerResponse(
+            answer_id=found["answer_id"],
+            question_id=found["question_id"],
+            pitch_id=found["pitch_id"],
+            audio_url=found.get("audio_url"),
+            text_transcript=found["text_transcript"],
+            feedback=AnswerFeedback(**feedback_data) if feedback_data else None,
+            evaluation_status=found.get("evaluation_status"),
+            created_at=datetime.fromisoformat(found["created_at"]),
+            evaluated_at=datetime.fromisoformat(found["evaluated_at"])
+            if found.get("evaluated_at")
+            else None,
+        )
 
     _raise_error(404, "ANSWER_NOT_FOUND", "해당 답변을 찾을 수 없습니다")
 
@@ -372,6 +467,7 @@ async def analyze_qa_answer(
     file: UploadFile = File(None),
     question: str = Form(...),
     answer_guide: str = Form(default=""),
+    question_type: str = Form(default="EVALUATOR"),
 ) -> dict:
     """
     POST /api/questions/{question_id}/answers/analyze
@@ -411,7 +507,7 @@ async def analyze_qa_answer(
     # 답변 평가
     try:
         evaluation = run_answer_evaluation(
-            question_type="EVALUATOR",
+            question_type=question_type,
             question_content=question,
             guidance=answer_guide,
             answer_transcript=transcript,
