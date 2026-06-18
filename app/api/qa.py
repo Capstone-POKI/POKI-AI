@@ -38,6 +38,7 @@ MAX_QA_AUDIO_FILE_SIZE = 25 * 1024 * 1024
 _LOCK = threading.Lock()
 _QA_SESSIONS: dict[str, QASessionData] = {}
 _SESSION_IDS_BY_PITCH: dict[str, list[str]] = {}
+_ANALYZED_ANSWERS: dict[str, dict] = {}  # answer_id → spec-format answer dict
 _STATE_NAME = "qa"
 
 
@@ -65,6 +66,7 @@ def _persist_state_locked() -> None:
                 for sid, sess in _QA_SESSIONS.items()
             },
             "session_ids_by_pitch": _SESSION_IDS_BY_PITCH,
+            "analyzed_answers": _ANALYZED_ANSWERS,
         },
     )
 
@@ -101,6 +103,12 @@ def _restore_state() -> None:
             str(pid): [str(item) for item in ids]
             for pid, ids in by_pitch.items()
             if isinstance(ids, list)
+        })
+
+    analyzed = payload.get("analyzed_answers", {})
+    if isinstance(analyzed, dict):
+        _ANALYZED_ANSWERS.update({
+            str(k): v for k, v in analyzed.items() if isinstance(v, dict)
         })
 
 
@@ -165,18 +173,7 @@ def _load_questions_from_cache(pitch_id: str) -> list[dict] | None:
 
 @router.post(
     "/pitches/{pitch_id}/qa/questions/generate",
-    response_model=QASessionResponse,
-    summary="Q&A 질문 생성 (멀티에이전트)",
-    description=(
-        "공고문·IR Deck·발표 내용을 바탕으로 4-Agent 파이프라인이 투자자 관점 질문 5개를 생성합니다.\n\n"
-        "**파이프라인:**\n"
-        "1. Agent 1 — 공고문 심사 핵심 포인트 추출\n"
-        "2. Agent 2 — IR 덱 취약 클레임 추출\n"
-        "3. Agent 3 — 날카로운 질문 7개 생성\n"
-        "4. Agent 4 — 품질 검증 후 최종 5개 선별\n\n"
-        "**동기 처리** — 요청 완료 시 질문이 이미 생성된 상태로 반환됩니다.\n"
-        "생성된 질문은 파일 캐시에도 저장되어 Docker 재시작 후에도 조회 가능합니다."
-    ),
+    summary="Q&A 질문 생성",
     tags=["qa"],
 )
 async def generate_qa_questions(
@@ -184,9 +181,13 @@ async def generate_qa_questions(
     notice_content: str = Form(..., description="공고문 전체 텍스트"),
     irdecksummary: str = Form(..., description="IR 덱 분석 요약"),
     presentation_content: str = Form(default=None, description="발표 내용 (선택)"),
-) -> QASessionResponse:
-    """Q&A 질문 생성 (멀티에이전트 4-Agent 파이프라인)"""
+    qa_mode: str = Form(default="REALTIME", description="REALTIME | GUIDE_ONLY"),
+) -> dict:
+    if qa_mode not in ("REALTIME", "GUIDE_ONLY"):
+        _raise_error(400, "INVALID_QA_MODE", "qa_mode는 REALTIME 또는 GUIDE_ONLY 이어야 합니다.")
+
     session_id = str(uuid4())
+    now_str = _now().isoformat()
 
     questions = await asyncio.to_thread(
         run_qa_question_generation,
@@ -197,33 +198,36 @@ async def generate_qa_questions(
     )
 
     if not questions:
-        # 빈 세션이라도 FAILED 상태로 반환 (BACK이 폴링할 수 있도록)
-        session = QASessionData(
-            session_id=session_id,
-            pitch_id=pitch_id,
-            status="FAILED",
-        )
+        session = QASessionData(session_id=session_id, pitch_id=pitch_id, status="FAILED")
         with _LOCK:
             _QA_SESSIONS[session_id] = session
-        return _to_qa_session_response(session)
+        _raise_error(500, "QA_GENERATION_FAILED", "질문 생성에 실패했습니다.")
 
-    # 세션 준비
-    session = prepare_qa_session(
-        session_id=session_id,
-        pitch_id=pitch_id,
-        questions=questions,
-    )
+    session = prepare_qa_session(session_id=session_id, pitch_id=pitch_id, questions=questions)
     session.status = "COMPLETED"
 
     with _LOCK:
         _QA_SESSIONS[session_id] = session
-        if pitch_id not in _SESSION_IDS_BY_PITCH:
-            _SESSION_IDS_BY_PITCH[pitch_id] = []
-        _SESSION_IDS_BY_PITCH[pitch_id].append(session_id)
+        _SESSION_IDS_BY_PITCH.setdefault(pitch_id, []).append(session_id)
         _persist_state_locked()
 
     print(f"[QA] 세션 생성 완료: {session_id} ({len(questions)}개 질문)")
-    return _to_qa_session_response(session)
+    return {
+        "pitch_id": pitch_id,
+        "qa_training": {
+            "qa_training_id": session_id,
+            "notice_id": None,
+            "ir_deck_id": None,
+            "voice_analysis_id": None,
+            "mode": qa_mode,
+            "total_questions": len(session.questions),
+            "version": 1,
+            "is_latest": True,
+            "created_at": now_str,
+            "updated_at": now_str,
+        },
+        "questions": _format_questions(session.questions, session.answers),
+    }
 
 
 @router.get(
@@ -277,28 +281,58 @@ async def get_all_qa_questions(pitch_id: str) -> dict:
             session = latest_session
 
     if session and session.questions:
-        questions = _format_questions(session.questions)
-        return {"questions": questions, "total": len(questions)}
+        now_str = _now().isoformat()
+        questions = _format_questions(session.questions, session.answers)
+        return {
+            "pitch_id": pitch_id,
+            "qa_training": {
+                "qa_training_id": session.session_id,
+                "mode": "REALTIME",
+                "total_questions": len(session.questions),
+                "version": 1,
+                "is_latest": True,
+            },
+            "questions": questions,
+            "updated_at": now_str,
+        }
 
     # 2) 메모리 미스 → 파일 캐시 복원
     cached_questions = _load_questions_from_cache(pitch_id)
     if cached_questions:
+        now_str = _now().isoformat()
         questions = _format_questions(cached_questions)
-        return {"questions": questions, "total": len(questions)}
+        return {
+            "pitch_id": pitch_id,
+            "qa_training": {
+                "qa_training_id": None,
+                "mode": "REALTIME",
+                "total_questions": len(cached_questions),
+                "version": 1,
+                "is_latest": True,
+            },
+            "questions": questions,
+            "updated_at": now_str,
+        }
 
-    return {"questions": [], "total": 0}
+    return {
+        "pitch_id": pitch_id,
+        "qa_training": None,
+        "questions": [],
+        "updated_at": _now().isoformat(),
+    }
 
 
-def _format_questions(raw_questions: list[dict]) -> list[dict]:
-    """세션 질문 딕셔너리를 BACK 호환 응답 형식으로 변환"""
+def _format_questions(raw_questions: list[dict], session_answers: dict | None = None) -> list[dict]:
     result = []
     for q in raw_questions:
+        qid = q["question_id"]
         result.append({
-            "question_id": q["question_id"],
-            "order": q["order"],
-            "type": q["question_type"],
-            "content": q["content"],
-            "guidance": q.get("guidance"),
+            "question_id": qid,
+            "category": q.get("category", "PROBLEM"),
+            "display_order": q["order"],
+            "question": q["content"],
+            "answer_guide": q.get("guidance"),
+            "has_answer": bool(session_answers and qid in session_answers),
         })
     return result
 
@@ -505,17 +539,23 @@ async def analyze_qa_answer(
         transcript = "(음성 변환 실패 또는 텍스트 미제공)"
 
     # 답변 평가
+    answer_id = str(uuid4())
+    now_str = _now().isoformat()
+
     try:
-        evaluation = run_answer_evaluation(
-            question_type=question_type,
-            question_content=question,
-            guidance=answer_guide,
-            answer_transcript=transcript,
+        evaluation = await asyncio.to_thread(
+            lambda: run_answer_evaluation(
+                question_type=question_type,
+                question_content=question,
+                guidance=answer_guide,
+                answer_transcript=transcript,
+            )
         )
         if evaluation is None:
             raise ValueError("Gemini 평가 결과 파싱 실패")
         final_score = calculate_weighted_score(evaluation)
-        return {
+        answer_dict = {
+            "answer_id": answer_id,
             "audio_file_url": audio_file_url,
             "transcription": transcript,
             "briefness_score": evaluation.clarity,
@@ -523,11 +563,14 @@ async def analyze_qa_answer(
             "structure_score": evaluation.structure,
             "strengths": ", ".join(evaluation.strengths) if evaluation.strengths else None,
             "weaknesses": ", ".join(evaluation.improvements) if evaluation.improvements else None,
-            "overall_score": final_score,
+            "answered_at": now_str,
+            "created_at": now_str,
+            "updated_at": now_str,
         }
     except Exception as e:
         print(f"[QA 답변] 평가 실패: {e}")
-        return {
+        answer_dict = {
+            "answer_id": answer_id,
             "audio_file_url": audio_file_url,
             "transcription": transcript,
             "briefness_score": None,
@@ -535,7 +578,36 @@ async def analyze_qa_answer(
             "structure_score": None,
             "strengths": None,
             "weaknesses": None,
+            "answered_at": now_str,
+            "created_at": now_str,
+            "updated_at": now_str,
         }
+
+    with _LOCK:
+        _ANALYZED_ANSWERS[answer_id] = {"question_id": question_id, **answer_dict}
+        _persist_state_locked()
+
+    return {"question_id": question_id, "answer": answer_dict}
+
+
+# ==================== 답변 단건 조회 ====================
+
+@router.get(
+    "/answers/{answer_id}",
+    summary="Q&A 답변 조회",
+    tags=["qa"],
+)
+async def get_answer_by_id(answer_id: str) -> dict:
+    """GET /api/answers/{answer_id} — analyze_qa_answer가 저장한 답변을 반환합니다."""
+    with _LOCK:
+        record = _ANALYZED_ANSWERS.get(answer_id)
+
+    if not record:
+        _raise_error(404, "ANSWER_NOT_FOUND", "해당 답변을 찾을 수 없습니다")
+
+    question_id = record.get("question_id")
+    answer_dict = {k: v for k, v in record.items() if k != "question_id"}
+    return {"question_id": question_id, "answer": answer_dict}
 
 
 # ==================== 건강 체크 ====================

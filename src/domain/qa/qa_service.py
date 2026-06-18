@@ -111,9 +111,11 @@ def prepare_qa_session(
             "question_id": question_id,
             "order": idx,
             "question_type": q.question_type,
+            "category": q.category,
             "content": q.content,
             "guidance": q.guidance,
             "rationale": q.rationale,
+            "created_at": _now().isoformat(),
         })
     
     return session
