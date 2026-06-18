@@ -2,6 +2,7 @@
 credentials/
 *.json
 !data/config/*.json
+!data/gt_labels/*.json
 .env
 /venv/
 /.venv/

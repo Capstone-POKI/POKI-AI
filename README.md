@@ -97,6 +97,13 @@ GEMINI_MODEL=gemini-2.5-flash
 # 내부 인증 (BACK 서버와 동일한 값 사용)
 AI_INTERNAL_API_KEY=replace-with-a-long-random-internal-key
 
+# S3 (공고문 PDF / IR Deck PDF / 음성 파일 저장)
+S3_BUCKET_NAME=your-s3-bucket-name
+AWS_REGION=ap-northeast-2
+S3_THUMBNAIL_PREFIX=ir-thumbnails
+# S3_PUBLIC_BASE_URL=https://your-cdn-domain.com  # CDN 사용 시
+# S3_USE_PRESIGNED_URL=0
+
 # (선택) Voice용 OpenAI Whisper
 OPENAI_API_KEY=your-openai-api-key
 ```
@@ -151,12 +158,13 @@ curl http://127.0.0.1:8000/health
 
 | Method | Path | 설명 |
 |--------|------|------|
-| POST | `/api/pitches/{pitch_id}/qa/questions/generate` | 4-Agent 파이프라인으로 투자자 질문 5개 생성 |
+| POST | `/api/pitches/{pitch_id}/qa/questions/generate` | Gemini로 투자자 질문 5개 생성 (qa_mode: REALTIME\|GUIDE_ONLY) |
 | GET | `/api/pitches/{pitch_id}/qa/sessions/{session_id}` | QA 세션 조회 |
 | GET | `/api/pitches/{pitch_id}/questions` | 질문 목록 조회 (BACK 폴링용) |
 | POST | `/api/pitches/{pitch_id}/qa/sessions/{session_id}/answers` | 답변 제출 |
 | GET | `/api/pitches/{pitch_id}/qa/sessions/{session_id}/answers/{answer_id}` | 답변 결과 조회 |
 | POST | `/api/questions/{question_id}/answers/analyze` | 음성/텍스트 답변 Gemini 평가 |
+| GET | `/api/answers/{answer_id}` | 분석된 답변 단건 조회 |
 
 ### Report (종합 리포트)
 
@@ -230,7 +238,9 @@ python -m pytest tests/test_ir_batch_live.py -v
 
 ## 주요 구현 사항
 
-- DB 미연결: 상태는 인메모리 저장소(`state_store.py`)에 유지되며 서버 재시작 시 초기화됩니다. QA 세션은 파일 캐시에도 저장되어 Docker 재시작 후 복원됩니다.
+- 분석 결과 상태는 파일 기반 JSON 저장소(`data/output/runtime_state/`)에 유지되며, 서버 재시작 후에도 복원됩니다. 최종 분석 결과는 BACK 서버가 폴링하여 PostgreSQL에 저장합니다.
+- 원본 파일(공고문 PDF, IR Deck PDF, 음성 파일)은 S3에 업로드됩니다. `S3_BUCKET_NAME`이 설정되지 않은 경우 로컬 파일시스템에만 저장됩니다.
+- IR 슬라이드 썸네일 이미지도 S3에 저장됩니다 (`S3_THUMBNAIL_PREFIX` 경로).
 - Voice 라우터는 `pydub`, `librosa`, `openai` 의존성이 없으면 import 실패할 수 있어 optional 로딩 처리되어 있습니다.
 - 모든 `/api/` 경로는 `x-internal-api-key` 헤더를 통해 BACK 서버와 상호 인증합니다.
 

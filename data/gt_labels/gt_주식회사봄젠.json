@@ -1,0 +1,87 @@
+{
+  "deck_name": "주식회사봄젠",
+  "folder": "경진대회_과천시_주식회사봄젠",
+  "pitch_type": "STARTUP_CONTEST",
+  "source_final_json": "data/output/ir_benchmark/경진대회_과천시_주식회사봄젠/경진대회_과천시_주식회사봄젠_final.json",
+  "note": "슬라이드 직접 확인 후 수동 레이블링 완료",
+  "slides": [
+    {
+      "slide_index": 1,
+      "gt_category": "COVER",
+      "model_predicted": "COVER",
+      "note": "Spring1 제품 이미지 + 회사명"
+    },
+    {
+      "slide_index": 2,
+      "gt_category": "PRODUCT",
+      "model_predicted": "PRODUCT",
+      "note": "Introduction: 주요 제품(Spring1/SeedChip/MyBOM) 소개 + 비전"
+    },
+    {
+      "slide_index": 3,
+      "gt_category": "PROBLEM",
+      "model_predicted": "ASK",
+      "note": "Problem: 성 매개 감염병 문제, 2억5천만 글로벌 연간 감염자 수"
+    },
+    {
+      "slide_index": 4,
+      "gt_category": "SOLUTION",
+      "model_predicted": "COVER",
+      "note": "Solution: 소형 클리닉 고가 장비/전문인력 문제 → 봄젠 솔루션"
+    },
+    {
+      "slide_index": 5,
+      "gt_category": "SOLUTION",
+      "model_predicted": "COVER",
+      "note": "Solution: 20분 이내 4가지 질병 동시 검사 워크플로우"
+    },
+    {
+      "slide_index": 6,
+      "gt_category": "PRODUCT",
+      "model_predicted": "SOLUTION",
+      "note": "Technology: 핵심 기술 비교표 (기존 vs 당사 가열 방식)"
+    },
+    {
+      "slide_index": 7,
+      "gt_category": "PRODUCT",
+      "model_predicted": "SOLUTION",
+      "note": "Technology: 광열효과 기반 기술 상세 다이어그램"
+    },
+    {
+      "slide_index": 8,
+      "gt_category": "BUSINESS_MODEL",
+      "model_predicted": "BUSINESS_MODEL",
+      "note": "Business Model: 네스프레소식 BM (진단장비 + 일회용 진단칩)"
+    },
+    {
+      "slide_index": 9,
+      "gt_category": "MARKET",
+      "model_predicted": "MARKET",
+      "note": "Market: 시장 규모 분석 TAM/SAM/SOM"
+    },
+    {
+      "slide_index": 10,
+      "gt_category": "GTM",
+      "model_predicted": "MARKET",
+      "note": "Market Entry: 초기 진입 시장 베트남 대도시"
+    },
+    {
+      "slide_index": 11,
+      "gt_category": "TRACTION",
+      "model_predicted": "ASK",
+      "note": "Growth: 연도별 영업이익 성장 그래프 (2025-2028)"
+    },
+    {
+      "slide_index": 12,
+      "gt_category": "TRACTION",
+      "model_predicted": "ASK",
+      "note": "Milestone: 글로벌 확장 마일스톤 (R&D→인증/시장진출→글로벌확장)"
+    },
+    {
+      "slide_index": 13,
+      "gt_category": "TEAM",
+      "model_predicted": "TEAM",
+      "note": "Team: 임원진 6명 소개 (CEO/CTO/CSO/연구원 등)"
+    }
+  ]
+}

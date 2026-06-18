@@ -1,0 +1,129 @@
+{
+  "deck_name": "주식회사자블리",
+  "folder": "경진대회_과천시_주식회사자블리",
+  "pitch_type": "STARTUP_CONTEST",
+  "source_final_json": "data/output/ir_benchmark/경진대회_과천시_주식회사자블리/경진대회_과천시_주식회사자블리_final.json",
+  "note": "슬라이드 직접 확인 후 수동 레이블링 완료",
+  "slides": [
+    {
+      "slide_index": 1,
+      "gt_category": "COVER",
+      "model_predicted": "TRACTION",
+      "note": "Cover: 6조원 외국인 유학생 HR SaaS + K-tag 로고 + 제품 스크린샷"
+    },
+    {
+      "slide_index": 2,
+      "gt_category": "TEAM",
+      "model_predicted": "TEAM",
+      "note": "조직 구성: Co-founder 4명 (CEO/COO/CTO/CMO) 상세 소개"
+    },
+    {
+      "slide_index": 3,
+      "gt_category": "MARKET",
+      "model_predicted": "MARKET",
+      "note": "시장: 국내·외 외국인 유학생 HR 시장 성장 데이터"
+    },
+    {
+      "slide_index": 4,
+      "gt_category": "PROBLEM",
+      "model_predicted": "PROBLEM",
+      "note": "목표 시장 문제: 외국인 유학생 노동 생산성 90.5% 불법"
+    },
+    {
+      "slide_index": 5,
+      "gt_category": "OTHER",
+      "model_predicted": "OTHER",
+      "note": "훅 슬라이드: 합법적 SaaS 서비스가 있다면??? (전환 슬라이드)"
+    },
+    {
+      "slide_index": 6,
+      "gt_category": "PRODUCT",
+      "model_predicted": "OTHER",
+      "note": "제품 데모 영상 캡처: K-tag 앱 시연"
+    },
+    {
+      "slide_index": 7,
+      "gt_category": "SOLUTION",
+      "model_predicted": "SOLUTION",
+      "note": "솔루션: 문제점 대안 3가지 방향 (원스톱 취업허가/AI 일자리추천/하이퍼로컬)"
+    },
+    {
+      "slide_index": 8,
+      "gt_category": "PRODUCT",
+      "model_predicted": "ASK",
+      "note": "기술 개발 로드맵: TIPS 과제 전/후 5가지 기술 개발 계획 + 타임라인"
+    },
+    {
+      "slide_index": 9,
+      "gt_category": "TRACTION",
+      "model_predicted": "PRODUCT",
+      "note": "표준화 전략: 대학교 MOU 40EA + 해외 8EA + 벤처기업확인 + 기술등급 TI3"
+    },
+    {
+      "slide_index": 10,
+      "gt_category": "BUSINESS_MODEL",
+      "model_predicted": "BUSINESS_MODEL",
+      "note": "비즈니스 모델: 기업-K-tag-유학생 수익 구조 + ARR 목표"
+    },
+    {
+      "slide_index": 11,
+      "gt_category": "BUSINESS_MODEL",
+      "model_predicted": "BUSINESS_MODEL",
+      "note": "비즈니스 모델 상세: 수익원 세분화 (구독/AI추천/부가서비스/알림/대학플랜)"
+    },
+    {
+      "slide_index": 12,
+      "gt_category": "MARKET",
+      "model_predicted": "MARKET",
+      "note": "시장 규모: TAM 9095억(2028) / SAM 4113억 / SOM 660억"
+    },
+    {
+      "slide_index": 13,
+      "gt_category": "TRACTION",
+      "model_predicted": "TRACTION",
+      "note": "비즈니스 로드맵: 2024-2027 매출 목표 (10억→100억→400억→1000억)"
+    },
+    {
+      "slide_index": 14,
+      "gt_category": "GTM",
+      "model_predicted": "ASK",
+      "note": "글로벌 진출 전략: 주요 송출 국가별 유학생 수 + 76% 집중 타겟"
+    },
+    {
+      "slide_index": 15,
+      "gt_category": "TEAM",
+      "model_predicted": "TEAM",
+      "note": "글로벌 진출 역량: Co-founder 해외 네트워크 + 현지 MOU 체결 현황"
+    },
+    {
+      "slide_index": 16,
+      "gt_category": "TEAM",
+      "model_predicted": "TEAM",
+      "note": "글로벌 헤드 매니저 6명 소개 + 25개국 진출 계획"
+    },
+    {
+      "slide_index": 17,
+      "gt_category": "GTM",
+      "model_predicted": "OTHER",
+      "note": "마케팅 추진 전략: 핵심 메시지 + 초기/중기/후기 단계별 전략"
+    },
+    {
+      "slide_index": 18,
+      "gt_category": "TRACTION",
+      "model_predicted": "MARKET",
+      "note": "마케팅 실적: K-TAG APP LAUNCH EVENT + SNS/틱톡 활동 + 서비스 기능 소개"
+    },
+    {
+      "slide_index": 19,
+      "gt_category": "TRACTION",
+      "model_predicted": "SOLUTION",
+      "note": "비즈니스 로드맵: 5년 유학생 10만 명 달성 +20000% 성장 목표"
+    },
+    {
+      "slide_index": 20,
+      "gt_category": "OTHER",
+      "model_predicted": "OTHER",
+      "note": "클로징: Beyond Borders 네트워킹 행사 단체사진 + 비전 메시지"
+    }
+  ]
+}
