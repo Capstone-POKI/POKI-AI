@@ -1,9 +1,8 @@
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict
 
-from src.infrastructure.document_ai.client import DocumentAIClient
+from src.infrastructure.document_ai.pipeline import run_document_ai_pipeline
 
 
 def run_notice_document_ai(notice_pdf: Path, output_dir: Path) -> Dict[str, Any]:
@@ -13,18 +12,12 @@ def run_notice_document_ai(notice_pdf: Path, output_dir: Path) -> Dict[str, Any]
     if output_path.exists():
         return _read_json(output_path)
 
-    project_id = os.getenv("PROJECT_ID", "pitchcoachai")
-    location = os.getenv("LOCATION", "us")
-    processor_id = os.getenv("OCR_PROCESSOR_ID", "e41bb5d1cae96184")
-
-    client = DocumentAIClient(
-        project_id=project_id,
-        location=location,
-        ocr_processor_id=processor_id,
+    return run_document_ai_pipeline(
+        pdf_path=notice_pdf,
+        output_dir=output_dir,
+        use_chunking=True,
+        pages_per_chunk=15,
     )
-    doc_dict = client.process_ocr_pdf(notice_pdf)
-    _write_json(output_path, doc_dict)
-    return doc_dict
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
