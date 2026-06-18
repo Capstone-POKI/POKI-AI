@@ -71,3 +71,33 @@ class S3Adapter:
             return f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{key}"
         except Exception:
             return None
+
+    def upload_file(
+        self,
+        *,
+        key: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> Optional[str]:
+        """공고문 PDF, IR Deck PDF, 음성 파일 등 원본 파일을 S3에 업로드한다."""
+        client = self._client_or_none()
+        if client is None:
+            return None
+        try:
+            client.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=BytesIO(data),
+                ContentType=content_type,
+            )
+            if self.use_presigned_url:
+                return client.generate_presigned_url(
+                    ClientMethod="get_object",
+                    Params={"Bucket": self.bucket, "Key": key},
+                    ExpiresIn=self.presigned_expire_sec,
+                )
+            if self.public_base_url:
+                return f"{self.public_base_url}/{key}"
+            return f"https://{self.bucket}.s3.{self.region}.amazonaws.com/{key}"
+        except Exception:
+            return None
