@@ -571,10 +571,10 @@ def get_notice_result(notice_id: str = FPath(..., description="Notice ID")):
             updated_at=row.updated_at,
         )
 
-    criteria_rows = _CRITERIA_BY_NOTICE_ID.get(notice_id, [])
-    if not criteria_rows:
-        criteria_rows = _default_criteria_rows(row.pitch_type, notice_id)
-        with _LOCK:
+    with _LOCK:
+        criteria_rows = _CRITERIA_BY_NOTICE_ID.get(notice_id, [])
+        if not criteria_rows:
+            criteria_rows = _default_criteria_rows(row.pitch_type, notice_id)
             _CRITERIA_BY_NOTICE_ID[notice_id] = criteria_rows
     criteria = _criteria_rows_to_api_items(criteria_rows)
     return NoticeResultCompletedResponse(
