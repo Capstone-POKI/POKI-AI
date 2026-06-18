@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
@@ -27,6 +28,9 @@ from app.models.deck_schema import (
 from app.state_store import load_state, save_state
 from app.upload import read_upload_limited, validate_pdf_payload
 from src.domain.ir.pipeline import run_ir_analysis
+from src.infrastructure.storage.s3_adapter import S3Adapter
+
+_s3 = S3Adapter()
 
 try:
     from app.api import notices as notice_router_module
@@ -575,6 +579,21 @@ async def upload_ir_and_analyze(
         _persist_state_locked()
 
     pdf_path.write_bytes(payload)
+
+    s3_url = await asyncio.to_thread(
+        lambda: _s3.upload_file(
+            key=f"ir-decks/{deck_id}.pdf",
+            data=payload,
+            content_type="application/pdf",
+        )
+    )
+    if s3_url:
+        with _LOCK:
+            row = _DECK_BY_ID.get(deck_id)
+            if row:
+                row.pdf_url = s3_url
+                _persist_state_locked()
+
     background_tasks.add_task(
         _run_ir_analysis_background,
         deck_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from dataclasses import dataclass, field
@@ -16,6 +17,9 @@ from src.domain.voice.whisper_adapter import (
     SCENARIO_CONFIG,
     analyze,
 )
+from src.infrastructure.storage.s3_adapter import S3Adapter
+
+_s3 = S3Adapter()
 
 router = APIRouter(prefix="/api", tags=["voice"])
 
@@ -45,6 +49,7 @@ class VoiceRow:
     status: str = "IN_PROGRESS"
     result: dict = field(default_factory=dict)
     error_message: str | None = None
+    audio_url: str | None = None
     created_at: datetime = field(default_factory=_now)
     completed_at: datetime | None = None
 
@@ -263,6 +268,28 @@ async def upload_voice_and_analyze(
         _persist_state_locked()
 
     audio_path.write_bytes(payload)
+
+    _AUDIO_MIME = {
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".webm": "audio/webm",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+    }
+    s3_url = await asyncio.to_thread(
+        lambda: _s3.upload_file(
+            key=f"voice/{voice_id}{suffix}",
+            data=payload,
+            content_type=_AUDIO_MIME.get(suffix, "application/octet-stream"),
+        )
+    )
+    if s3_url:
+        with _LOCK:
+            row = _VOICE_BY_ID.get(voice_id)
+            if row:
+                row.audio_url = s3_url
+                _persist_state_locked()
 
     background_tasks.add_task(
         _run_voice_background,

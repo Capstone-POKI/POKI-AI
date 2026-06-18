@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,6 +22,9 @@ from app.models.notice_schema import (
 from app.state_store import load_state, save_state
 from app.upload import read_upload_limited, validate_pdf_payload
 from src.domain.notice.pipeline import init_gemini, run_notice_analysis
+from src.infrastructure.storage.s3_adapter import S3Adapter
+
+_s3 = S3Adapter()
 
 router = APIRouter(prefix="/api", tags=["notice"])
 
@@ -514,6 +518,20 @@ async def upload_notice_and_analyze(
     NOTICE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     pdf_path = NOTICE_UPLOAD_DIR / f"{notice_id}.pdf"
     pdf_path.write_bytes(payload)
+
+    s3_url = await asyncio.to_thread(
+        lambda: _s3.upload_file(
+            key=f"notices/{notice_id}.pdf",
+            data=payload,
+            content_type="application/pdf",
+        )
+    )
+    if s3_url:
+        with _LOCK:
+            row = _NOTICE_BY_ID.get(notice_id)
+            if row:
+                row.pdf_url = s3_url
+                _persist_state_locked()
 
     background_tasks.add_task(_run_notice_analysis_background, notice_id, pdf_path)
 
